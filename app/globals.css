@@ -1,26 +1,60 @@
 @import "tailwindcss";
 
+@font-face {
+  font-family: "DM Sans";
+  font-style: normal;
+  font-weight: 100 900;
+  font-display: swap;
+  src: url("https://fonts.gstatic.com/s/dmsans/v15/rP2tp2ywxg089UriI5-g4vlH9VoD8CmcqZG40F9JadbnoEwA.woff2")
+    format("woff2");
+}
+
+@font-face {
+  font-family: "Space Mono";
+  font-style: normal;
+  font-weight: 400;
+  font-display: swap;
+  src: url("https://fonts.gstatic.com/s/spacemono/v13/i7dPIFZifjKcF5UAWdDRYEF8RQ.woff2")
+    format("woff2");
+}
+
+@font-face {
+  font-family: "Space Mono";
+  font-style: normal;
+  font-weight: 700;
+  font-display: swap;
+  src: url("https://fonts.gstatic.com/s/spacemono/v13/i7dMIFZifjKcF5UAWdDRaPpZYFKQHw.woff2")
+    format("woff2");
+}
+
 :root {
-  --background: #ffffff;
-  --foreground: #171717;
+  --radar-bg: #0f1114;
+  --radar-surface: #1a1d23;
+  --radar-border: #2a2d35;
+  --radar-text: #e8e9ec;
+  --radar-text-muted: #6b7080;
+  --radar-green: #22c55e;
+  --radar-yellow: #eab308;
+  --radar-red: #ef4444;
+  --radar-accent: #3b82f6;
 }
 
 @theme inline {
-  --color-background: var(--background);
-  --color-foreground: var(--foreground);
-  --font-sans: var(--font-geist-sans);
-  --font-mono: var(--font-geist-mono);
-}
-
-@media (prefers-color-scheme: dark) {
-  :root {
-    --background: #0a0a0a;
-    --foreground: #ededed;
-  }
+  --color-radar-bg: var(--radar-bg);
+  --color-radar-surface: var(--radar-surface);
+  --color-radar-border: var(--radar-border);
+  --color-radar-text: var(--radar-text);
+  --color-radar-text-muted: var(--radar-text-muted);
+  --color-radar-green: var(--radar-green);
+  --color-radar-yellow: var(--radar-yellow);
+  --color-radar-red: var(--radar-red);
+  --color-radar-accent: var(--radar-accent);
+  --font-sans: "DM Sans", system-ui, sans-serif;
+  --font-mono: "Space Mono", monospace;
 }
 
 body {
-  background: var(--background);
-  color: var(--foreground);
-  font-family: Arial, Helvetica, sans-serif;
+  background: var(--radar-bg);
+  color: var(--radar-text);
+  font-family: var(--font-sans);
 }

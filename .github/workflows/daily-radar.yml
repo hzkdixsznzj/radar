@@ -1,0 +1,37 @@
+name: Daily Radar Pipeline
+
+on:
+  schedule:
+    - cron: "0 5 * * *"  # 5h UTC = 6h CET / 7h CEST
+  workflow_dispatch:
+
+env:
+  ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+  NEXT_PUBLIC_SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+  NEXT_PUBLIC_SUPABASE_ANON_KEY: ${{ secrets.SUPABASE_ANON_KEY }}
+  SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+  VAPID_PUBLIC_KEY: ${{ secrets.VAPID_PUBLIC_KEY }}
+  VAPID_PRIVATE_KEY: ${{ secrets.VAPID_PRIVATE_KEY }}
+  VAPID_EMAIL: ${{ secrets.VAPID_EMAIL }}
+
+jobs:
+  pipeline:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - run: npm ci
+
+      - name: Fetch TED tenders
+        run: npx tsx scripts/fetch-ted.ts
+
+      - name: Analyze with Claude
+        run: npx tsx scripts/analyze.ts
+
+      - name: Send push notifications
+        run: npx tsx scripts/notify.ts
