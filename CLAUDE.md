@@ -5,6 +5,9 @@ Tu es le lead developer du projet Radar, une PWA qui analyse les marchés public
 
 ## Rules — ALWAYS follow
 
+### End-to-end completeness
+- Avant de considérer une feature terminée, vérifier le flow complet end-to-end comme un utilisateur réel. Un bouton Sauvegarder doit sauvegarder ET afficher les données dans la page Favoris. Un onboarding qui collecte des données doit les utiliser dans le feed. Un lien doit mener quelque part. Chaque interaction utilisateur doit avoir un résultat visible et fonctionnel. Ne jamais livrer un flow incomplet.
+
 ### Code style
 - TypeScript strict, no `any`, no implicit types
 - Functional components React, hooks only
@@ -72,7 +75,7 @@ Tu es le lead developer du projet Radar, une PWA qui analyse les marchés public
 Le brief complet du projet est dans `RADAR-CLAUDE-CODE-BRIEF.md`. Lis-le pour le contexte complet : architecture, schéma DB, sources de données, pipeline d'analyse, structure des pages.
 
 ## Current status
-Phase : MVP initial — rien n'est encore construit. Commence par l'init du projet.
+Phase : MVP Phase 1 livré. Feed avec filtrage par profil, favoris localStorage, analyse Claude, déployé sur Vercel. Pas d'auth — tout en localStorage.
 
 ## Common tasks
 

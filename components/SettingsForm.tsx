@@ -1,90 +1,68 @@
 "use client";
 
-import { useEffect, useState, useCallback } from "react";
+import { useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
-import { supabase } from "@/lib/supabase";
 import { SPECIALTIES, REGIONS, PROVINCES } from "@/lib/types";
-import type { Profile } from "@/lib/types";
+
+interface ProfileData {
+  company_name: string;
+  specialties: string[];
+  regions: string[];
+  provinces: string[];
+  min_amount: number;
+  max_amount: number;
+}
+
+const DEFAULT_PROFILE: ProfileData = {
+  company_name: "",
+  specialties: [],
+  regions: [],
+  provinces: [],
+  min_amount: 10000,
+  max_amount: 500000,
+};
 
 export function SettingsForm() {
   const router = useRouter();
-  const [profile, setProfile] = useState<Profile | null>(null);
+  const [profile, setProfile] = useState<ProfileData>(DEFAULT_PROFILE);
   const [loading, setLoading] = useState(true);
-  const [saving, setSaving] = useState(false);
   const [message, setMessage] = useState<string | null>(null);
 
-  const fetchProfile = useCallback(async () => {
-    try {
-      const {
-        data: { user },
-      } = await supabase.auth.getUser();
-      if (!user) {
-        router.push("/auth");
-        return;
-      }
-
-      const { data } = await supabase
-        .from("profiles")
-        .select("*")
-        .eq("id", user.id)
-        .single();
-
-      if (data) setProfile(data as Profile);
-    } catch {
-      // Error loading profile
-    } finally {
-      setLoading(false);
-    }
-  }, [router]);
-
   useEffect(() => {
-    fetchProfile();
-  }, [fetchProfile]);
+    try {
+      const raw = localStorage.getItem("radar_profile");
+      if (raw) {
+        setProfile(JSON.parse(raw) as ProfileData);
+      }
+    } catch {
+      // use defaults
+    }
+    setLoading(false);
+  }, []);
 
   function toggleItem(key: "specialties" | "regions" | "provinces", value: string) {
-    if (!profile) return;
-    const current = profile[key] ?? [];
-    setProfile({
-      ...profile,
-      [key]: current.includes(value)
-        ? current.filter((v) => v !== value)
-        : [...current, value],
-    });
+    setProfile((prev) => ({
+      ...prev,
+      [key]: prev[key].includes(value)
+        ? prev[key].filter((v) => v !== value)
+        : [...prev[key], value],
+    }));
   }
 
-  async function handleSave() {
-    if (!profile) return;
-    setSaving(true);
-    setMessage(null);
-
-    try {
-      const { error } = await supabase
-        .from("profiles")
-        .update({
-          company_name: profile.company_name,
-          specialties: profile.specialties,
-          regions: profile.regions,
-          provinces: profile.provinces,
-          min_amount: profile.min_amount,
-          max_amount: profile.max_amount,
-        })
-        .eq("id", profile.id);
-
-      if (error) throw error;
-      setMessage("Profil mis à jour");
-    } catch (err: unknown) {
-      setMessage(err instanceof Error ? err.message : "Erreur");
-    } finally {
-      setSaving(false);
-    }
+  function handleSave() {
+    localStorage.setItem("radar_profile", JSON.stringify(profile));
+    setMessage("Profil mis à jour");
+    setTimeout(() => setMessage(null), 2000);
   }
 
-  async function handleLogout() {
-    await supabase.auth.signOut();
+  function handleReset() {
+    localStorage.removeItem("radar_profile");
+    localStorage.removeItem("radar_saved");
+    localStorage.removeItem("radar_dismissed");
     router.push("/");
   }
 
-  if (loading || !profile) {
+  if (loading) {
     return (
       <div className="flex items-center justify-center py-20">
         <div className="w-6 h-6 border-2 border-radar-accent border-t-transparent rounded-full animate-spin" />
@@ -106,9 +84,9 @@ export function SettingsForm() {
         </label>
         <input
           type="text"
-          value={profile.company_name ?? ""}
+          value={profile.company_name}
           onChange={(e) =>
-            setProfile({ ...profile, company_name: e.target.value })
+            setProfile((prev) => ({ ...prev, company_name: e.target.value }))
           }
           className="w-full px-4 py-3 rounded-lg bg-radar-surface border border-radar-border text-radar-text focus:outline-none focus:border-radar-accent"
         />
@@ -120,7 +98,7 @@ export function SettingsForm() {
         </label>
         <div className="grid grid-cols-2 gap-2">
           {SPECIALTIES.map((s) => {
-            const selected = profile.specialties?.includes(s.value);
+            const selected = profile.specialties.includes(s.value);
             return (
               <button
                 key={s.value}
@@ -144,7 +122,7 @@ export function SettingsForm() {
         </label>
         <div className="flex gap-2">
           {REGIONS.map((r) => {
-            const selected = profile.regions?.includes(r.value);
+            const selected = profile.regions.includes(r.value);
             return (
               <button
                 key={r.value}
@@ -161,9 +139,9 @@ export function SettingsForm() {
           })}
         </div>
         <div className="grid grid-cols-2 gap-2">
-          {PROVINCES.filter((p) => profile.regions?.includes(p.region)).map(
+          {PROVINCES.filter((p) => profile.regions.includes(p.region)).map(
             (p) => {
-              const selected = profile.provinces?.includes(p.value);
+              const selected = profile.provinces.includes(p.value);
               return (
                 <button
                   key={p.value}
@@ -196,7 +174,7 @@ export function SettingsForm() {
           step={10000}
           value={profile.min_amount}
           onChange={(e) =>
-            setProfile({ ...profile, min_amount: Number(e.target.value) })
+            setProfile((prev) => ({ ...prev, min_amount: Number(e.target.value) }))
           }
           className="w-full accent-radar-accent"
         />
@@ -207,7 +185,7 @@ export function SettingsForm() {
           step={10000}
           value={profile.max_amount}
           onChange={(e) =>
-            setProfile({ ...profile, max_amount: Number(e.target.value) })
+            setProfile((prev) => ({ ...prev, max_amount: Number(e.target.value) }))
           }
           className="w-full accent-radar-accent"
         />
@@ -215,17 +193,16 @@ export function SettingsForm() {
 
       <button
         onClick={handleSave}
-        disabled={saving}
-        className="w-full py-3 rounded-lg bg-radar-accent text-white font-semibold disabled:opacity-40 hover:brightness-110 transition-all"
+        className="w-full py-3 rounded-lg bg-radar-accent text-white font-semibold hover:brightness-110 transition-all"
       >
-        {saving ? "Enregistrement..." : "Sauvegarder"}
+        Sauvegarder
       </button>
 
       <button
-        onClick={handleLogout}
+        onClick={handleReset}
         className="w-full py-3 rounded-lg border border-radar-red/30 text-radar-red text-sm hover:bg-radar-red/10 transition-colors"
       >
-        Se déconnecter
+        Réinitialiser le profil
       </button>
     </div>
   );

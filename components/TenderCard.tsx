@@ -9,6 +9,7 @@ interface TenderCardProps {
   tender: Tender;
   onSave?: () => void;
   onDismiss?: () => void;
+  dismissLabel?: string;
 }
 
 function formatAmount(min: number | null, max: number | null): string {
@@ -21,7 +22,7 @@ function formatAmount(min: number | null, max: number | null): string {
   return fmt(min ?? max!);
 }
 
-export function TenderCard({ tender, onSave, onDismiss }: TenderCardProps) {
+export function TenderCard({ tender, onSave, onDismiss, dismissLabel }: TenderCardProps) {
   const analysis = tender.raw_data?.analysis;
 
   return (
@@ -79,18 +80,22 @@ export function TenderCard({ tender, onSave, onDismiss }: TenderCardProps) {
       )}
 
       <div className="flex gap-2 pt-1">
-        <button
-          onClick={onSave}
-          className="flex-1 py-2 text-xs font-semibold rounded border border-radar-green/30 text-radar-green hover:bg-radar-green/10 transition-colors"
-        >
-          Sauvegarder
-        </button>
-        <button
-          onClick={onDismiss}
-          className="flex-1 py-2 text-xs font-semibold rounded border border-radar-border text-radar-text-muted hover:bg-radar-border/30 transition-colors"
-        >
-          Passer
-        </button>
+        {onSave && (
+          <button
+            onClick={onSave}
+            className="flex-1 py-2 text-xs font-semibold rounded border border-radar-green/30 text-radar-green hover:bg-radar-green/10 transition-colors"
+          >
+            Sauvegarder
+          </button>
+        )}
+        {onDismiss && (
+          <button
+            onClick={onDismiss}
+            className="flex-1 py-2 text-xs font-semibold rounded border border-radar-border text-radar-text-muted hover:bg-radar-border/30 transition-colors"
+          >
+            {dismissLabel ?? "Passer"}
+          </button>
+        )}
       </div>
     </div>
   );
