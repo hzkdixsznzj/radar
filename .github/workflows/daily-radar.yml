@@ -1,0 +1,60 @@
+name: Daily Radar Pipeline
+
+# Scrapes fresh Belgian tenders from TED and pushes a digest notification
+# to subscribed users every morning. Free tier, more reliable than Vercel
+# cron (which has 1/day limits on hobby plans and flaky execution).
+#
+# Required GitHub Secrets (Settings → Secrets and variables → Actions):
+#   NEXT_PUBLIC_SUPABASE_URL
+#   NEXT_PUBLIC_SUPABASE_ANON_KEY
+#   SUPABASE_SERVICE_ROLE_KEY
+#   VAPID_PUBLIC_KEY
+#   VAPID_PRIVATE_KEY
+#   VAPID_EMAIL           (e.g. mailto:contact@radar.be)
+#
+# Optional:
+#   NOTIFY_THRESHOLD      (default 70 — score cutoff for push digest)
+
+on:
+  schedule:
+    # 5h UTC = 6h CET / 7h CEST — lands just before users wake up.
+    - cron: '0 5 * * *'
+  workflow_dispatch: {}
+
+concurrency:
+  group: daily-radar
+  cancel-in-progress: false
+
+env:
+  NEXT_PUBLIC_SUPABASE_URL: ${{ secrets.NEXT_PUBLIC_SUPABASE_URL }}
+  NEXT_PUBLIC_SUPABASE_ANON_KEY: ${{ secrets.NEXT_PUBLIC_SUPABASE_ANON_KEY }}
+  SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+  VAPID_PUBLIC_KEY: ${{ secrets.VAPID_PUBLIC_KEY }}
+  VAPID_PRIVATE_KEY: ${{ secrets.VAPID_PRIVATE_KEY }}
+  VAPID_EMAIL: ${{ secrets.VAPID_EMAIL }}
+  NOTIFY_THRESHOLD: ${{ secrets.NOTIFY_THRESHOLD }}
+
+jobs:
+  pipeline:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Scrape TED (Belgian tenders, last 7 days)
+        run: pnpm exec tsx src/lib/scrapers/ted-scraper.ts
+
+      - name: Send daily push digest
+        run: pnpm exec tsx scripts/notify.ts
