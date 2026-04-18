@@ -53,8 +53,14 @@ jobs:
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
 
-      - name: Scrape TED (Belgian tenders, last 7 days)
+      - name: Scrape TED (EU-threshold Belgian tenders, last 7 days)
         run: pnpm exec tsx src/lib/scrapers/ted-scraper.ts
+
+      - name: Scrape BDA (Belgian sub-threshold tenders, last 7 days)
+        # Covers Belgian public tenders below EU thresholds that never
+        # appear in TED — the bulk of opportunities for SMEs. If this step
+        # fails we still want the pipeline to continue, so `|| true` below.
+        run: pnpm exec tsx src/lib/scrapers/be-scraper.ts || true
 
       - name: Send daily push digest
         run: pnpm exec tsx scripts/notify.ts
