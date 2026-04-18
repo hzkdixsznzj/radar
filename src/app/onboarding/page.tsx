@@ -15,25 +15,11 @@ import {
   X,
   Plus,
   Check,
+  Hash,
+  Sparkles,
+  AlertCircle,
 } from 'lucide-react';
-
-const SECTORS = [
-  'Construction',
-  'HVAC',
-  'Électricité',
-  'Plomberie',
-  'Informatique',
-  'Nettoyage',
-  'Transport',
-  'Restauration',
-  'Consulting',
-  'Environnement',
-  'Sécurité',
-  'Communication',
-  'Santé',
-  'Formation',
-  'Autre',
-];
+import { sectorsByGroup, expandSelection, SECTORS_BY_ID } from '@/lib/sectors/vocabulary';
 
 const CERTIFICATIONS = [
   'VCA',
@@ -246,8 +232,79 @@ export default function OnboardingPage() {
 
   // Step 1 state
   const [companyName, setCompanyName] = useState('');
-  const [sectors, setSectors] = useState<string[]>([]);
+  // sectorIds are from SECTORS vocabulary (e.g. "hvac", "plomberie"). On save
+  // we expand them to human-readable labels + CPV tokens + FR/NL/EN keywords.
+  const [sectorIds, setSectorIds] = useState<string[]>([]);
   const [companyDescription, setCompanyDescription] = useState('');
+
+  // KBO (VAT lookup) state — pre-fills the company + suggests sectors.
+  const [vatInput, setVatInput] = useState('');
+  const [vatBusy, setVatBusy] = useState(false);
+  const [vatMessage, setVatMessage] = useState<{
+    kind: 'success' | 'error';
+    text: string;
+  } | null>(null);
+
+  async function handleVatLookup() {
+    if (vatBusy) return;
+    setVatMessage(null);
+    const trimmed = vatInput.trim();
+    if (!trimmed) {
+      setVatMessage({ kind: 'error', text: 'Entrez un numéro de TVA.' });
+      return;
+    }
+    setVatBusy(true);
+    try {
+      const res = await fetch(
+        `/api/kbo/lookup?vat=${encodeURIComponent(trimmed)}`,
+      );
+      const body = (await res.json()) as {
+        ok: boolean;
+        error?: string;
+        company_name?: string;
+        activities?: string[];
+        suggested_sectors?: string[];
+      };
+      if (!res.ok || !body.ok) {
+        const label =
+          body.error === 'invalid-vat'
+            ? 'Numéro de TVA invalide.'
+            : body.error === 'not-found'
+              ? 'Entreprise introuvable dans la BCE.'
+              : body.error === 'rate-limited'
+                ? 'Veuillez patienter quelques secondes.'
+                : 'La BCE est injoignable pour le moment.';
+        setVatMessage({ kind: 'error', text: label });
+        return;
+      }
+
+      if (body.company_name) setCompanyName(body.company_name);
+      if (body.suggested_sectors && body.suggested_sectors.length > 0) {
+        // Merge (dedup) — don't wipe manual picks.
+        setSectorIds((cur) =>
+          Array.from(new Set([...cur, ...(body.suggested_sectors ?? [])])),
+        );
+      }
+      if (body.activities && body.activities.length > 0 && !companyDescription) {
+        setCompanyDescription(body.activities.slice(0, 3).join(' · '));
+      }
+
+      setVatMessage({
+        kind: 'success',
+        text:
+          body.suggested_sectors && body.suggested_sectors.length > 0
+            ? `Entreprise trouvée — ${body.suggested_sectors.length} secteur(s) suggéré(s).`
+            : 'Entreprise trouvée. Vérifiez et complétez les champs.',
+      });
+    } catch {
+      setVatMessage({
+        kind: 'error',
+        text: 'Erreur réseau. Veuillez réessayer.',
+      });
+    } finally {
+      setVatBusy(false);
+    }
+  }
 
   // Step 2 state
   const [certifications, setCertifications] = useState<string[]>([]);
@@ -269,7 +326,7 @@ export default function OnboardingPage() {
 
   function canProceed(): boolean {
     if (step === 0) {
-      return companyName.trim().length > 0 && sectors.length > 0;
+      return companyName.trim().length > 0 && sectorIds.length > 0;
     }
     if (step === 1) {
       return budgetRanges.length > 0;
@@ -295,17 +352,26 @@ export default function OnboardingPage() {
         return;
       }
 
+      // Expand selected sector ids into the labels + CPV tokens + auto-
+      // keywords that the scoring library needs. Merge auto-keywords with
+      // the user's custom keywords (dedup, preserve order).
+      const { sectors: expandedSectors, keywords: autoKeywords } =
+        expandSelection(sectorIds);
+      const mergedKeywords = Array.from(
+        new Set([...keywords, ...autoKeywords].map((k) => k.trim()).filter(Boolean)),
+      );
+
       const { error: upsertError } = await supabase
         .from('profiles')
         .upsert(
           {
             user_id: user.id,
             company_name: companyName.trim(),
-            sectors,
+            sectors: expandedSectors,
             certifications,
             regions,
             budget_ranges: budgetRanges,
-            keywords,
+            keywords: mergedKeywords,
             company_description: companyDescription.trim(),
             onboarding_completed: true,
           },
@@ -387,6 +453,62 @@ export default function OnboardingPage() {
               {/* Step 1: Company */}
               {step === 0 && (
                 <div className="space-y-5">
+                  {/* VAT lookup — pre-fills company name, description, sectors. */}
+                  <div className="rounded-xl border border-border bg-bg-card/50 p-4 space-y-3">
+                    <div className="flex items-center gap-2">
+                      <Sparkles className="size-4 text-accent-blue" />
+                      <p className="text-sm font-semibold text-text-primary">
+                        Remplir automatiquement (BCE)
+                      </p>
+                    </div>
+                    <p className="text-xs text-text-muted">
+                      Entrez votre numéro de TVA pour pré-remplir votre profil
+                      avec les données publiques de la Banque-Carrefour des
+                      Entreprises.
+                    </p>
+                    <div className="flex gap-2">
+                      <div className="flex-1">
+                        <Input
+                          value={vatInput}
+                          onChange={(e) => setVatInput(e.target.value)}
+                          placeholder="BE 0123.456.789"
+                          icon={<Hash className="size-4" />}
+                          onKeyDown={(e) => {
+                            if (e.key === 'Enter') {
+                              e.preventDefault();
+                              handleVatLookup();
+                            }
+                          }}
+                        />
+                      </div>
+                      <Button
+                        variant="secondary"
+                        size="md"
+                        loading={vatBusy}
+                        onClick={handleVatLookup}
+                      >
+                        Rechercher
+                      </Button>
+                    </div>
+                    {vatMessage && (
+                      <div
+                        className={`flex items-center gap-2 rounded-lg px-3 py-2 text-xs ${
+                          vatMessage.kind === 'success'
+                            ? 'bg-accent-green-soft text-accent-green'
+                            : 'bg-accent-red-soft text-accent-red'
+                        }`}
+                        role={vatMessage.kind === 'error' ? 'alert' : 'status'}
+                      >
+                        {vatMessage.kind === 'success' ? (
+                          <Check className="size-3.5 shrink-0" />
+                        ) : (
+                          <AlertCircle className="size-3.5 shrink-0" />
+                        )}
+                        <span>{vatMessage.text}</span>
+                      </div>
+                    )}
+                  </div>
+
                   <Input
                     label="Nom de l'entreprise"
                     placeholder="Ex: Dupont Construction SA"
@@ -399,11 +521,55 @@ export default function OnboardingPage() {
                     <label className="mb-2 block text-sm font-medium text-text-secondary">
                       Secteurs d&apos;activité
                     </label>
-                    <MultiSelect
-                      options={SECTORS}
-                      selected={sectors}
-                      onChange={setSectors}
-                    />
+                    <p className="mb-3 text-xs text-text-muted">
+                      Sélectionne les activités de ton entreprise. Chaque secteur
+                      active automatiquement les codes CPV et les mots-clés FR/NL/EN
+                      correspondants — c&apos;est ce qui fait que le feed te
+                      trouve les bons marchés.
+                    </p>
+                    <div className="max-h-80 overflow-y-auto rounded-lg border border-border p-3 space-y-4">
+                      {Object.entries(sectorsByGroup()).map(([group, list]) => (
+                        <div key={group}>
+                          <h4 className="mb-2 text-xs font-semibold uppercase tracking-wider text-text-muted">
+                            {group}
+                          </h4>
+                          <div className="grid grid-cols-1 gap-1.5 sm:grid-cols-2">
+                            {list.map((s) => {
+                              const selected = sectorIds.includes(s.id);
+                              return (
+                                <button
+                                  key={s.id}
+                                  type="button"
+                                  onClick={() =>
+                                    setSectorIds((cur) =>
+                                      cur.includes(s.id)
+                                        ? cur.filter((x) => x !== s.id)
+                                        : [...cur, s.id],
+                                    )
+                                  }
+                                  className={`flex items-center gap-2 rounded-lg border px-3 py-2 text-left text-sm transition-colors cursor-pointer ${
+                                    selected
+                                      ? 'border-accent-blue bg-accent-blue-soft text-text-primary'
+                                      : 'border-border bg-bg-input text-text-secondary hover:border-border-focus hover:text-text-primary'
+                                  }`}
+                                >
+                                  <div
+                                    className={`flex size-4 shrink-0 items-center justify-center rounded border transition-colors ${
+                                      selected
+                                        ? 'border-accent-blue bg-accent-blue'
+                                        : 'border-border bg-transparent'
+                                    }`}
+                                  >
+                                    {selected && <Check className="size-3 text-white" />}
+                                  </div>
+                                  <span className="truncate">{s.label}</span>
+                                </button>
+                              );
+                            })}
+                          </div>
+                        </div>
+                      ))}
+                    </div>
                   </div>
 
                   <div>
@@ -486,7 +652,7 @@ export default function OnboardingPage() {
                   </div>
 
                   {/* Profile summary */}
-                  {(companyName || sectors.length > 0 || regions.length > 0) && (
+                  {(companyName || sectorIds.length > 0 || regions.length > 0) && (
                     <div className="rounded-xl border border-border bg-bg-primary p-4">
                       <h3 className="mb-3 text-sm font-semibold text-text-primary">
                         Résumé de votre profil
@@ -498,10 +664,15 @@ export default function OnboardingPage() {
                             <dd className="text-text-primary">{companyName}</dd>
                           </div>
                         )}
-                        {sectors.length > 0 && (
+                        {sectorIds.length > 0 && (
                           <div className="flex gap-2">
                             <dt className="shrink-0 text-text-muted">Secteurs:</dt>
-                            <dd className="text-text-secondary">{sectors.join(', ')}</dd>
+                            <dd className="text-text-secondary">
+                              {sectorIds
+                                .map((id) => SECTORS_BY_ID[id]?.label)
+                                .filter(Boolean)
+                                .join(', ')}
+                            </dd>
                           </div>
                         )}
                         {certifications.length > 0 && (

@@ -9,6 +9,7 @@ import {
   Tag,
   Crown,
   Bell,
+  BellPlus,
   Mail,
   Globe,
   LogOut,
@@ -26,6 +27,10 @@ import {
 } from 'lucide-react';
 import clsx from 'clsx';
 import { createClient } from '@/lib/supabase/client';
+import {
+  enablePushNotifications,
+  disablePushNotifications,
+} from '@/lib/pwa/register-sw';
 import { BottomNav } from '@/components/layout/bottom-nav';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
@@ -36,6 +41,37 @@ import { Card } from '@/components/ui/card';
 import { Modal } from '@/components/ui/modal';
 import { Skeleton } from '@/components/ui/loading';
 import type { Profile, Subscription, SubscriptionPlan } from '@/types/database';
+
+// ----------------------------------------------------------------
+// Saved-search shape (matches public.saved_searches)
+// ----------------------------------------------------------------
+
+interface SavedSearchRow {
+  id: string;
+  name: string;
+  filters: {
+    type?: string;
+    region?: string;
+    budget?: string;
+    deadline?: string;
+  } | null;
+  last_notified_at: string | null;
+  created_at: string;
+}
+
+/**
+ * Render a saved-search's filter payload as a short human-readable
+ * summary for the profile list — e.g. "works · Hainaut · < 200K".
+ */
+function describeFilters(f: SavedSearchRow['filters']): string {
+  if (!f) return 'Aucun filtre';
+  const parts: string[] = [];
+  if (f.type && f.type !== 'all') parts.push(f.type);
+  if (f.region && f.region !== 'Toutes') parts.push(f.region);
+  if (f.budget && f.budget !== 'all') parts.push(f.budget);
+  if (f.deadline && f.deadline !== 'all') parts.push(f.deadline);
+  return parts.length ? parts.join(' · ') : 'Aucun filtre';
+}
 
 // ----------------------------------------------------------------
 // Option lists
@@ -129,8 +165,18 @@ export default function ProfilPage() {
   const [description, setDescription] = useState('');
 
   // Settings
-  const [pushNotifications, setPushNotifications] = useState(true);
+  const [pushNotifications, setPushNotifications] = useState(false);
   const [emailNotifications, setEmailNotifications] = useState(true);
+  const [pushBusy, setPushBusy] = useState(false);
+  const [pushMessage, setPushMessage] = useState<{
+    kind: 'success' | 'error';
+    text: string;
+  } | null>(null);
+
+  // Saved searches ("Mes alertes")
+  const [savedSearches, setSavedSearches] = useState<SavedSearchRow[]>([]);
+  const [savedSearchesLoading, setSavedSearchesLoading] = useState(true);
+  const [deletingSearchId, setDeletingSearchId] = useState<string | null>(null);
 
   const supabase = useMemo(() => createClient(), []);
 
@@ -171,6 +217,10 @@ export default function ProfilPage() {
         setBudgetRanges(p.budget_ranges);
         setKeywords(p.keywords);
         setDescription(p.company_description);
+        // Push toggle reflects whether the user has a live subscription.
+        setPushNotifications(
+          Boolean((p as unknown as { push_subscription?: unknown }).push_subscription),
+        );
       }
 
       if (subRes.data) {
@@ -186,6 +236,50 @@ export default function ProfilPage() {
   useEffect(() => {
     fetchProfile();
   }, [fetchProfile]);
+
+  // ---- Saved searches ----
+
+  const fetchSavedSearches = useCallback(async () => {
+    setSavedSearchesLoading(true);
+    try {
+      const res = await fetch('/api/saved-searches');
+      if (!res.ok) return;
+      const body = (await res.json()) as { saved_searches?: SavedSearchRow[] };
+      setSavedSearches(body.saved_searches ?? []);
+    } catch (err) {
+      console.error('Failed to fetch saved searches:', err);
+    } finally {
+      setSavedSearchesLoading(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    fetchSavedSearches();
+  }, [fetchSavedSearches]);
+
+  const handleDeleteSavedSearch = useCallback(
+    async (id: string) => {
+      if (deletingSearchId) return;
+      setDeletingSearchId(id);
+      // Optimistic update — restore on failure.
+      const snapshot = savedSearches;
+      setSavedSearches((prev) => prev.filter((s) => s.id !== id));
+      try {
+        const res = await fetch(`/api/saved-searches/${id}`, {
+          method: 'DELETE',
+        });
+        if (!res.ok) {
+          setSavedSearches(snapshot);
+        }
+      } catch (err) {
+        console.error('Failed to delete saved search:', err);
+        setSavedSearches(snapshot);
+      } finally {
+        setDeletingSearchId(null);
+      }
+    },
+    [savedSearches, deletingSearchId],
+  );
 
   // ---- Save ----
 
@@ -272,6 +366,68 @@ export default function ProfilPage() {
     [handleAddKeyword],
   );
 
+  // ---- Push notifications ----
+
+  const handleTogglePush = useCallback(async () => {
+    if (pushBusy) return;
+    setPushMessage(null);
+    setPushBusy(true);
+    try {
+      if (pushNotifications) {
+        await disablePushNotifications();
+        setPushNotifications(false);
+        setPushMessage({ kind: 'success', text: 'Notifications désactivées.' });
+      } else {
+        const res = await enablePushNotifications();
+        if (res.ok) {
+          setPushNotifications(true);
+          setPushMessage({ kind: 'success', text: 'Notifications activées !' });
+        } else {
+          const reason =
+            res.reason === 'permission-denied'
+              ? 'Autorisation refusée dans votre navigateur.'
+              : res.reason === 'unsupported-browser'
+                ? 'Votre navigateur ne supporte pas les notifications push.'
+                : `Impossible d\u2019activer : ${res.reason}`;
+          setPushMessage({ kind: 'error', text: reason });
+        }
+      }
+    } finally {
+      setPushBusy(false);
+    }
+  }, [pushNotifications, pushBusy]);
+
+  const handleTestPush = useCallback(async () => {
+    if (pushBusy) return;
+    setPushMessage(null);
+    setPushBusy(true);
+    try {
+      const res = await fetch('/api/push/test', { method: 'POST' });
+      if (res.ok) {
+        setPushMessage({
+          kind: 'success',
+          text: 'Notification envoyée ! Vérifiez votre appareil.',
+        });
+      } else {
+        const body = await res.json().catch(() => ({}));
+        if (res.status === 410) {
+          setPushNotifications(false);
+        }
+        setPushMessage({
+          kind: 'error',
+          text: body.error ?? 'Échec de l\u2019envoi de la notification test.',
+        });
+      }
+    } catch (err) {
+      setPushMessage({
+        kind: 'error',
+        text: err instanceof Error ? err.message : 'Erreur réseau.',
+      });
+    } finally {
+      setPushBusy(false);
+    }
+  }, [pushBusy]);
+
   // ---- Account actions ----
 
   const handleSignOut = useCallback(async () => {
@@ -350,7 +506,7 @@ export default function ProfilPage() {
 
   return (
     <div className="min-h-dvh bg-bg-primary pb-24">
-      {/* Header — back nav + Radar logo (matches login/signup pattern) */}
+      {/* Header — back nav + Radar logo + sign out (matches login/signup pattern) */}
       <header className="flex items-center gap-3 px-4 pt-4 pb-2 safe-top">
         <Link
           href="/dashboard"
@@ -366,6 +522,15 @@ export default function ProfilPage() {
           <Radar className="size-5 text-accent-blue" />
           Radar
         </Link>
+        <button
+          type="button"
+          onClick={handleSignOut}
+          aria-label="Se déconnecter"
+          className="ml-auto flex items-center gap-1.5 rounded-xl border border-border bg-bg-card px-3 py-2 text-sm font-medium text-text-secondary transition-colors hover:border-accent-red hover:text-accent-red"
+        >
+          <LogOut className="size-4" />
+          <span className="hidden sm:inline">Déconnexion</span>
+        </button>
       </header>
 
       {/* Page title */}
@@ -648,35 +813,67 @@ export default function ProfilPage() {
 
           <Card padding="none">
             {/* Push notifications */}
-            <div className="flex items-center justify-between p-4 border-b border-border">
-              <div className="flex items-center gap-3">
-                <Bell className="size-4 text-text-muted" />
-                <div>
-                  <p className="text-sm font-medium text-text-primary">
-                    Notifications push
-                  </p>
-                  <p className="text-xs text-text-muted">
-                    Nouveaux marchés pertinents
-                  </p>
+            <div className="p-4 border-b border-border">
+              <div className="flex items-center justify-between">
+                <div className="flex items-center gap-3">
+                  <Bell className="size-4 text-text-muted" />
+                  <div>
+                    <p className="text-sm font-medium text-text-primary">
+                      Notifications push
+                    </p>
+                    <p className="text-xs text-text-muted">
+                      Nouveaux marchés pertinents
+                    </p>
+                  </div>
                 </div>
-              </div>
-              <button
-                type="button"
-                role="switch"
-                aria-checked={pushNotifications}
-                onClick={() => setPushNotifications((prev) => !prev)}
-                className={clsx(
-                  'relative inline-flex h-6 w-11 items-center rounded-full transition-colors cursor-pointer',
-                  pushNotifications ? 'bg-accent-blue' : 'bg-border',
-                )}
-              >
-                <span
+                <button
+                  type="button"
+                  role="switch"
+                  aria-checked={pushNotifications}
+                  onClick={handleTogglePush}
+                  disabled={pushBusy}
                   className={clsx(
-                    'inline-block size-4 rounded-full bg-white transition-transform',
-                    pushNotifications ? 'translate-x-6' : 'translate-x-1',
+                    'relative inline-flex h-6 w-11 items-center rounded-full transition-colors cursor-pointer disabled:opacity-60',
+                    pushNotifications ? 'bg-accent-blue' : 'bg-border',
                   )}
-                />
-              </button>
+                >
+                  <span
+                    className={clsx(
+                      'inline-block size-4 rounded-full bg-white transition-transform',
+                      pushNotifications ? 'translate-x-6' : 'translate-x-1',
+                    )}
+                  />
+                </button>
+              </div>
+
+              {pushNotifications && (
+                <div className="mt-3 flex items-center justify-between gap-2">
+                  <p className="text-xs text-text-muted">
+                    Envoyez-vous un test pour vérifier.
+                  </p>
+                  <button
+                    type="button"
+                    onClick={handleTestPush}
+                    disabled={pushBusy}
+                    className="rounded-full border border-border bg-bg-card px-3 py-1 text-xs font-medium text-text-secondary transition-colors hover:border-border-focus hover:text-text-primary disabled:opacity-60"
+                  >
+                    {pushBusy ? '…' : 'Tester'}
+                  </button>
+                </div>
+              )}
+
+              {pushMessage && (
+                <p
+                  className={clsx(
+                    'mt-2 rounded-md px-3 py-2 text-xs',
+                    pushMessage.kind === 'success'
+                      ? 'bg-accent-green-soft text-accent-green'
+                      : 'bg-accent-red-soft text-accent-red',
+                  )}
+                >
+                  {pushMessage.text}
+                </p>
+              )}
             </div>
 
             {/* Email notifications */}
@@ -727,6 +924,65 @@ export default function ProfilPage() {
               </div>
             </div>
           </Card>
+        </section>
+
+        {/* ============================================================ */}
+        {/* SAVED SEARCHES                                                */}
+        {/* ============================================================ */}
+        <section className="space-y-4">
+          <div className="flex items-center gap-2 mb-1">
+            <BellPlus className="size-4 text-accent-blue" />
+            <h2 className="text-sm font-semibold text-text-primary uppercase tracking-wider">
+              Mes alertes
+            </h2>
+          </div>
+
+          {savedSearchesLoading ? (
+            <Skeleton className="h-16 w-full rounded-xl" />
+          ) : savedSearches.length === 0 ? (
+            <Card padding="md">
+              <p className="text-sm text-text-secondary">
+                Aucune alerte pour le moment. Depuis le feed, combinez des
+                filtres puis touchez{' '}
+                <span className="inline-flex items-center gap-1 rounded-full bg-accent-blue-soft px-2 py-0.5 text-xs text-accent-blue">
+                  <BellPlus className="size-3" /> Enregistrer
+                </span>{' '}
+                pour être notifié dès qu’un nouveau marché correspond.
+              </p>
+            </Card>
+          ) : (
+            <Card padding="none">
+              <ul>
+                {savedSearches.map((search, i) => (
+                  <li
+                    key={search.id}
+                    className={clsx(
+                      'flex items-center justify-between gap-3 p-4',
+                      i < savedSearches.length - 1 && 'border-b border-border',
+                    )}
+                  >
+                    <div className="min-w-0 flex-1">
+                      <p className="truncate text-sm font-medium text-text-primary">
+                        {search.name}
+                      </p>
+                      <p className="mt-0.5 truncate text-xs text-text-muted">
+                        {describeFilters(search.filters)}
+                      </p>
+                    </div>
+                    <button
+                      type="button"
+                      onClick={() => handleDeleteSavedSearch(search.id)}
+                      disabled={deletingSearchId === search.id}
+                      aria-label={`Supprimer l'alerte ${search.name}`}
+                      className="shrink-0 rounded-lg p-2 text-text-muted transition-colors hover:bg-accent-red-soft hover:text-accent-red disabled:opacity-50"
+                    >
+                      <Trash2 className="size-4" />
+                    </button>
+                  </li>
+                ))}
+              </ul>
+            </Card>
+          )}
         </section>
 
         {/* ============================================================ */}

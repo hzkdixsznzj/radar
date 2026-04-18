@@ -1,9 +1,10 @@
 'use client';
 
-import { useState, useCallback, useEffect } from 'react';
-import { AlertTriangle, Radar as RadarIcon, RotateCw, SlidersHorizontal } from 'lucide-react';
+import { Suspense, useState, useCallback, useEffect } from 'react';
+import { AlertTriangle, BellPlus, CheckCircle2, Radar as RadarIcon, RotateCw, SlidersHorizontal } from 'lucide-react';
 import Link from 'next/link';
-import { useRouter } from 'next/navigation';
+import { useRouter, useSearchParams } from 'next/navigation';
+import { AnimatePresence, motion } from 'framer-motion';
 import { CardStack } from '@/components/feed/card-stack';
 import {
   FeedFilters,
@@ -11,6 +12,8 @@ import {
 } from '@/components/feed/feed-filters';
 import { BottomNav } from '@/components/layout/bottom-nav';
 import { Button } from '@/components/ui/button';
+import { Input } from '@/components/ui/input';
+import { Modal } from '@/components/ui/modal';
 import { CardSkeleton } from '@/components/ui/loading';
 import type { TenderWithScore } from '@/types/database';
 
@@ -31,15 +34,49 @@ type TendersApiResponse = {
 };
 
 export default function FeedPage() {
+  // `useSearchParams` requires a Suspense boundary during prerender.
+  // Wrapping the whole body is cheapest; we show a skeleton while the
+  // URL params are read on the client.
+  return (
+    <Suspense fallback={<FeedSkeleton />}>
+      <FeedInner />
+    </Suspense>
+  );
+}
+
+function FeedInner() {
   const router = useRouter();
+  const searchParams = useSearchParams();
+
+  // Seed the initial filter state from the URL so deep-links from the
+  // dashboard map (e.g. `/feed?region=Hainaut`) land pre-filtered.
+  const initialFilters: FeedFiltersState = {
+    ...DEFAULT_FILTERS,
+    type:
+      (searchParams.get('type') as FeedFiltersState['type']) ??
+      DEFAULT_FILTERS.type,
+    region: searchParams.get('region') ?? DEFAULT_FILTERS.region,
+    budget: searchParams.get('budget') ?? DEFAULT_FILTERS.budget,
+    deadline: searchParams.get('deadline') ?? DEFAULT_FILTERS.deadline,
+  };
+
   const [tenders, setTenders] = useState<TenderWithScore[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
-  const [filters, setFilters] = useState<FeedFiltersState>(DEFAULT_FILTERS);
+  const [filters, setFilters] = useState<FeedFiltersState>(initialFilters);
   const [viewCount, setViewCount] = useState(0);
   const [page, setPage] = useState(0);
   const [refreshing, setRefreshing] = useState(false);
   const [plan, setPlan] = useState<'free' | 'pro' | 'business'>('free');
+  // Total matching tenders in DB for current filters (count from API).
+  const [totalMatching, setTotalMatching] = useState<number | null>(null);
+
+  // ---- Saved-search modal state ----
+  const [saveOpen, setSaveOpen] = useState(false);
+  const [saveName, setSaveName] = useState('');
+  const [saveBusy, setSaveBusy] = useState(false);
+  const [saveError, setSaveError] = useState<string | null>(null);
+  const [saveToast, setSaveToast] = useState(false);
 
   // Fetch the user's current subscription plan (drives the free-tier counter).
   useEffect(() => {
@@ -93,8 +130,11 @@ export default function FeedPage() {
         const data: TenderWithScore[] = Array.isArray(json)
           ? json
           : json.tenders ?? [];
+        const total =
+          Array.isArray(json) ? null : typeof json.total === 'number' ? json.total : null;
 
         setTenders((prev) => (pageNum === 0 ? data : [...prev, ...data]));
+        if (pageNum === 0) setTotalMatching(total);
       } catch (err) {
         console.error('Error fetching tenders:', err);
         setError('Impossible de charger les marchés.');
@@ -151,11 +191,58 @@ export default function FeedPage() {
   }
 
   function handleAnalyze(tender: TenderWithScore) {
-    router.push(`/analyse/${tender.id}`);
+    // Land on the read-only detail page first. From there, the user can
+    // launch the AI analysis deliberately — avoids burning credits on
+    // accidental taps.
+    router.push(`/tender/${tender.id}`);
   }
 
   function handleFiltersChange(newFilters: FeedFiltersState) {
     setFilters(newFilters);
+  }
+
+  // ---- Save-search handlers ----
+
+  function handleOpenSaveDialog() {
+    // Seed a sensible default name from the filter chips so the user
+    // usually only has to click "Enregistrer" once.
+    const parts: string[] = [];
+    if (filters.type !== 'all') parts.push(filters.type);
+    if (filters.region !== 'Toutes') parts.push(filters.region);
+    if (filters.budget !== 'all') parts.push(filters.budget);
+    if (filters.deadline !== 'all') parts.push(filters.deadline);
+    setSaveName(parts.join(' · ').slice(0, 80));
+    setSaveError(null);
+    setSaveOpen(true);
+  }
+
+  async function handleSaveSearch() {
+    const name = saveName.trim();
+    if (!name) {
+      setSaveError('Donnez un nom à votre alerte.');
+      return;
+    }
+    setSaveBusy(true);
+    setSaveError(null);
+    try {
+      const res = await fetch('/api/saved-searches', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ name, filters }),
+      });
+      if (!res.ok) {
+        const body = await res.json().catch(() => ({}));
+        setSaveError(body.error ?? 'Erreur lors de l’enregistrement.');
+        return;
+      }
+      setSaveOpen(false);
+      setSaveToast(true);
+      setTimeout(() => setSaveToast(false), 2800);
+    } catch {
+      setSaveError('Erreur réseau. Veuillez réessayer.');
+    } finally {
+      setSaveBusy(false);
+    }
   }
 
   return (
@@ -163,9 +250,16 @@ export default function FeedPage() {
       {/* Header */}
       <header className="safe-top border-b border-border bg-bg-primary/80 backdrop-blur-xl">
         <div className="flex items-center justify-between px-4 py-3">
-          <h1 className="text-lg font-bold font-[family-name:var(--font-display)]">
-            Radar
-          </h1>
+          <div className="flex items-baseline gap-3">
+            <h1 className="text-lg font-bold font-[family-name:var(--font-display)]">
+              Radar
+            </h1>
+            {totalMatching !== null && tenders.length > 0 && (
+              <span className="text-xs text-text-muted">
+                {Math.min(viewCount, tenders.length)} / {totalMatching} marchés
+              </span>
+            )}
+          </div>
           <div className="flex items-center gap-2">
             {plan === 'free' && (
               <span className="rounded-full bg-bg-card px-3 py-1 text-xs font-medium text-text-secondary">
@@ -186,7 +280,11 @@ export default function FeedPage() {
         </div>
 
         {/* Filters */}
-        <FeedFilters filters={filters} onChange={handleFiltersChange} />
+        <FeedFilters
+          filters={filters}
+          onChange={handleFiltersChange}
+          onSaveSearch={handleOpenSaveDialog}
+        />
       </header>
 
       {/* Card stack / states */}
@@ -213,6 +311,74 @@ export default function FeedPage() {
           />
         )}
       </main>
+
+      {/* Save-search modal */}
+      <Modal
+        open={saveOpen}
+        onClose={() => setSaveOpen(false)}
+        title="Enregistrer cette recherche"
+      >
+        <div className="space-y-4">
+          <p className="text-sm text-text-secondary">
+            Vous recevrez une notification push quand de nouveaux marchés
+            correspondant à ces filtres seront publiés.
+          </p>
+          <Input
+            label="Nom de l'alerte"
+            value={saveName}
+            onChange={(e) => setSaveName(e.target.value)}
+            placeholder="HVAC en Hainaut sous 200k"
+            icon={<BellPlus className="size-4" />}
+            maxLength={80}
+            autoFocus
+          />
+          {saveError && (
+            <p
+              className="rounded-lg bg-accent-red-soft p-3 text-sm text-accent-red"
+              role="alert"
+            >
+              {saveError}
+            </p>
+          )}
+          <div className="flex gap-3">
+            <Button
+              variant="secondary"
+              size="md"
+              fullWidth
+              onClick={() => setSaveOpen(false)}
+            >
+              Annuler
+            </Button>
+            <Button
+              variant="primary"
+              size="md"
+              fullWidth
+              loading={saveBusy}
+              onClick={handleSaveSearch}
+            >
+              Enregistrer
+            </Button>
+          </div>
+        </div>
+      </Modal>
+
+      {/* Save-success toast */}
+      <AnimatePresence>
+        {saveToast && (
+          <motion.div
+            initial={{ opacity: 0, y: 20 }}
+            animate={{ opacity: 1, y: 0 }}
+            exit={{ opacity: 0, y: 20 }}
+            transition={{ duration: 0.2, ease: 'easeOut' }}
+            role="status"
+            aria-live="polite"
+            className="fixed bottom-24 left-1/2 z-50 -translate-x-1/2 flex items-center gap-2 rounded-full border border-accent-green/30 bg-accent-green-soft px-4 py-2.5 text-sm font-medium text-accent-green shadow-lg"
+          >
+            <CheckCircle2 className="size-4" />
+            Alerte enregistrée
+          </motion.div>
+        )}
+      </AnimatePresence>
 
       {/* Bottom navigation */}
       <BottomNav />

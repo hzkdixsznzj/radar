@@ -1,7 +1,7 @@
 'use client';
 
 import { useState, useRef } from 'react';
-import { ChevronDown, RotateCcw } from 'lucide-react';
+import { BellPlus, ChevronDown, RotateCcw } from 'lucide-react';
 import clsx from 'clsx';
 import type { TenderType } from '@/types/database';
 
@@ -51,6 +51,13 @@ export interface FeedFiltersState {
 export interface FeedFiltersProps {
   filters: FeedFiltersState;
   onChange: (filters: FeedFiltersState) => void;
+  /**
+   * Optional — when provided, a "Enregistrer" chip appears next to the
+   * reset button whenever at least one filter is active. Clicking it
+   * lets the parent open a "save this search" dialog. Keeping the
+   * callback external means the filter component stays presentational.
+   */
+  onSaveSearch?: () => void;
 }
 
 function FilterChip({
@@ -144,7 +151,7 @@ function DropdownFilter({
   );
 }
 
-export function FeedFilters({ filters, onChange }: FeedFiltersProps) {
+export function FeedFilters({ filters, onChange, onSaveSearch }: FeedFiltersProps) {
   const hasActiveFilters =
     filters.type !== 'all' ||
     filters.region !== 'Toutes' ||
@@ -212,6 +219,18 @@ export function FeedFilters({ filters, onChange }: FeedFiltersProps) {
           active={filters.deadline !== 'all'}
           onChange={(deadline) => onChange({ ...filters, deadline })}
         />
+
+        {/* Save-search chip — parent decides how to name/persist. */}
+        {hasActiveFilters && onSaveSearch && (
+          <button
+            onClick={onSaveSearch}
+            type="button"
+            className="flex shrink-0 items-center gap-1.5 rounded-full bg-accent-blue-soft px-3 py-1.5 text-sm font-medium text-accent-blue transition-colors hover:bg-accent-blue hover:text-white"
+          >
+            <BellPlus className="size-3.5" />
+            Enregistrer
+          </button>
+        )}
 
         {/* Reset button */}
         {hasActiveFilters && (

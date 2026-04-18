@@ -13,6 +13,7 @@ import {
   Crown,
   Loader2,
   AlertTriangle,
+  Download,
 } from 'lucide-react';
 import clsx from 'clsx';
 
@@ -388,6 +389,22 @@ export default function RedactionPage({
       </header>
 
       <main className="mx-auto w-full max-w-3xl px-4 pt-5">
+        {/* Print-only header — replaces the on-screen sticky header when the
+            user exports to PDF. Keeps the document legible standalone. */}
+        {data && (
+          <div className="print-only mb-6">
+            <h1 className="text-xl font-bold">
+              Mémoire technique — {data.tender.title}
+            </h1>
+            <p className="mt-1 text-sm">
+              {data.tender.contracting_authority}
+              {data.tender.deadline &&
+                ` · Échéance: ${new Date(data.tender.deadline).toLocaleDateString('fr-BE')}`}
+            </p>
+            <hr className="my-3" />
+          </div>
+        )}
+
         {loading ? (
           <LoadingSkeleton />
         ) : loadError ? (
@@ -452,7 +469,7 @@ export default function RedactionPage({
 
       {/* Sticky save bar */}
       {data && sections && !loading && (
-        <div className="fixed inset-x-0 bottom-0 z-30 border-t border-border bg-bg-primary/90 backdrop-blur-xl safe-bottom">
+        <div className="no-print fixed inset-x-0 bottom-0 z-30 border-t border-border bg-bg-primary/90 backdrop-blur-xl safe-bottom">
           <div className="mx-auto flex max-w-3xl items-center gap-3 px-4 py-3">
             <AnimatePresence>
               {saved && (
@@ -468,6 +485,15 @@ export default function RedactionPage({
               )}
             </AnimatePresence>
             <div className="flex-1" />
+            <Button
+              variant="secondary"
+              size="md"
+              onClick={() => window.print()}
+              icon={<Download className="size-4" />}
+            >
+              <span className="hidden sm:inline">Exporter en PDF</span>
+              <span className="sm:hidden">PDF</span>
+            </Button>
             <Button
               variant="primary"
               size="md"

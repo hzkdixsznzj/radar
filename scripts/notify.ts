@@ -18,9 +18,10 @@
 // ---------------------------------------------------------------------------
 
 import { readFileSync, existsSync } from 'node:fs';
-import { createClient } from '@supabase/supabase-js';
+import { createClient, type SupabaseClient } from '@supabase/supabase-js';
 import { initVapid, sendPushNotification } from '../src/lib/push';
 import { scoreTender } from '../src/lib/scrapers/scoring';
+import { BE_REGION_TO_NUTS, type BERegion } from '../src/lib/geo/be-regions';
 import type { Profile, Tender } from '../src/types/database';
 
 // Load .env.local when running locally (CI provides env directly).
@@ -38,6 +39,214 @@ const LOOKBACK_HOURS = 24;
 interface ProfileWithPush extends Profile {
   push_subscription: PushSubscriptionJSON | null;
   last_push_sent_at: string | null;
+}
+
+// Saved-search row shape matching public.saved_searches (see migration 004).
+interface SavedSearchRow {
+  id: string;
+  user_id: string;
+  name: string;
+  filters: {
+    type?: string;
+    region?: string;
+    budget?: string;
+    deadline?: string;
+    keywords?: string[];
+  } | null;
+  last_notified_at: string | null;
+}
+
+/**
+ * Test a single tender against a saved_searches filter payload. Mirrors the
+ * logic in /api/tenders (friendly region → NUTS prefix, budget chip parsing,
+ * deadline window). Kept intentionally permissive: an empty/null filters
+ * object matches everything.
+ */
+function tenderMatchesSavedFilters(
+  tender: Tender,
+  filters: SavedSearchRow['filters'],
+): boolean {
+  if (!filters) return true;
+
+  // Type
+  if (filters.type && filters.type !== 'all' && tender.tender_type !== filters.type) {
+    return false;
+  }
+
+  // Region (friendly name → NUTS prefix, then `startsWith`).
+  if (filters.region && filters.region !== 'Toutes') {
+    const prefix = BE_REGION_TO_NUTS[filters.region as BERegion];
+    const needle = prefix ?? filters.region;
+    const hit =
+      (tender.region && tender.region.toUpperCase().startsWith(needle.toUpperCase())) ||
+      (tender.nuts_codes ?? []).some((c) =>
+        c.toUpperCase().startsWith(needle.toUpperCase()),
+      );
+    if (!hit) return false;
+  }
+
+  // Budget chip (mirrors parseBudgetParam in /api/tenders).
+  if (filters.budget && filters.budget !== 'all') {
+    const value = tender.estimated_value;
+    const plus = filters.budget.match(/^(\d+)\+$/);
+    const range = filters.budget.match(/^(\d+)-(\d+)$/);
+    if (plus) {
+      const min = Number(plus[1]);
+      if (value == null || value < min) return false;
+    } else if (range) {
+      const min = Number(range[1]);
+      const max = Number(range[2]);
+      if (value == null || value < min || value > max) return false;
+    }
+  }
+
+  // Deadline window ("week"/"month"/<days>).
+  if (filters.deadline && filters.deadline !== 'all') {
+    const now = Date.now();
+    const days =
+      filters.deadline === 'week'
+        ? 7
+        : filters.deadline === 'month'
+          ? 30
+          : Number(filters.deadline);
+    if (!Number.isNaN(days)) {
+      if (!tender.deadline) return false;
+      const d = new Date(tender.deadline).getTime();
+      if (d < now || d > now + days * 86400_000) return false;
+    }
+  }
+
+  // Free-text keywords (AND semantics — every keyword must appear).
+  if (filters.keywords && filters.keywords.length) {
+    const haystack = [
+      tender.title,
+      tender.description,
+      tender.full_text,
+      tender.contracting_authority,
+    ]
+      .join(' ')
+      .toLowerCase();
+    for (const k of filters.keywords) {
+      if (!haystack.includes(k.toLowerCase())) return false;
+    }
+  }
+
+  return true;
+}
+
+/**
+ * Saved-search notification phase — run after the profile digest.
+ * For each saved search we:
+ *   1. Skip if already notified within the last 24h.
+ *   2. Check the owner has a live push_subscription (JOIN-ish).
+ *   3. Filter fresh tenders through the search's filter payload.
+ *   4. If at least one matches, push + stamp last_notified_at.
+ * Dead subscriptions (410) null the profile row so the main digest
+ * doesn't keep hammering them either.
+ */
+async function processSavedSearches(
+  supabase: SupabaseClient,
+  freshTenders: Tender[],
+): Promise<{ sent: number; skipped: number; failed: number }> {
+  let sent = 0;
+  let skipped = 0;
+  let failed = 0;
+
+  const { data: searches, error } = await supabase
+    .from('saved_searches')
+    .select('id, user_id, name, filters, last_notified_at');
+
+  if (error) {
+    console.warn('[notify] saved_searches query failed:', error.message);
+    return { sent, skipped, failed };
+  }
+
+  if (!searches?.length) return { sent, skipped, failed };
+  console.log(`[notify] Checking ${searches.length} saved searches…`);
+
+  // Cooldown: 22h so a daily cron that drifts by a few minutes still fires.
+  const cooldownMs = 22 * 3600_000;
+  const nowMs = Date.now();
+
+  // Cache profile push subscriptions by user_id to avoid N roundtrips.
+  const userIds = Array.from(new Set((searches as SavedSearchRow[]).map((s) => s.user_id)));
+  const { data: profileRows } = await supabase
+    .from('profiles')
+    .select('user_id, push_subscription')
+    .in('user_id', userIds);
+
+  const pushByUser = new Map<string, PushSubscriptionJSON | null>();
+  for (const p of (profileRows ?? []) as {
+    user_id: string;
+    push_subscription: PushSubscriptionJSON | null;
+  }[]) {
+    pushByUser.set(p.user_id, p.push_subscription);
+  }
+
+  for (const search of searches as SavedSearchRow[]) {
+    // Cooldown check.
+    if (search.last_notified_at) {
+      const last = new Date(search.last_notified_at).getTime();
+      if (nowMs - last < cooldownMs) {
+        skipped++;
+        continue;
+      }
+    }
+
+    const sub = pushByUser.get(search.user_id);
+    if (!sub) {
+      skipped++;
+      continue;
+    }
+
+    const matches = freshTenders.filter((t) =>
+      tenderMatchesSavedFilters(t, search.filters),
+    );
+    if (matches.length === 0) {
+      skipped++;
+      continue;
+    }
+
+    const best = matches[0];
+    const payload = {
+      title: `Alerte "${search.name}" — ${matches.length} nouveau${
+        matches.length > 1 ? 'x marchés' : ' marché'
+      }`,
+      body: `${best.title.slice(0, 120)}${best.title.length > 120 ? '…' : ''}`,
+      url: '/feed',
+    };
+
+    let ok = false;
+    try {
+      ok = await sendPushNotification(sub, payload);
+    } catch (err) {
+      console.warn(
+        `[notify] Saved-search push error (${search.id}):`,
+        err instanceof Error ? err.message : err,
+      );
+      failed++;
+      continue;
+    }
+
+    if (ok) {
+      sent++;
+      await supabase
+        .from('saved_searches')
+        .update({ last_notified_at: new Date().toISOString() })
+        .eq('id', search.id);
+    } else {
+      // 404/410 — subscription dead. Null it on the owner so future runs
+      // skip every saved search and the daily digest for this user.
+      await supabase
+        .from('profiles')
+        .update({ push_subscription: null })
+        .eq('user_id', search.user_id);
+      pushByUser.set(search.user_id, null);
+      failed++;
+    }
+  }
+
+  return { sent, skipped, failed };
 }
 
 async function main(): Promise<void> {
@@ -79,16 +288,12 @@ async function main(): Promise<void> {
     .not('push_subscription', 'is', null);
 
   if (profilesErr) throw new Error(`Failed to fetch profiles: ${profilesErr.message}`);
-  if (!profiles?.length) {
-    console.log('[notify] No subscribed profiles.');
-    return;
-  }
 
   let sent = 0;
   let skipped = 0;
   let failed = 0;
 
-  for (const profileRaw of profiles as ProfileWithPush[]) {
+  for (const profileRaw of (profiles ?? []) as ProfileWithPush[]) {
     // Already notified today? Skip.
     if (
       profileRaw.last_push_sent_at &&
@@ -151,7 +356,15 @@ async function main(): Promise<void> {
   }
 
   console.log(
-    `[notify] Done. sent=${sent} skipped=${skipped} failed/expired=${failed}`,
+    `[notify] Digest done. sent=${sent} skipped=${skipped} failed/expired=${failed}`,
+  );
+
+  // ---- Saved-search phase ----
+  // Run after the main digest so dead subscriptions nulled above
+  // propagate to `pushByUser` via the fresh profile lookup.
+  const ss = await processSavedSearches(supabase, tenders as Tender[]);
+  console.log(
+    `[notify] Saved-searches done. sent=${ss.sent} skipped=${ss.skipped} failed/expired=${ss.failed}`,
   );
 }
 

@@ -111,3 +111,62 @@ body {
 .safe-top {
   padding-top: env(safe-area-inset-top);
 }
+
+/* ---------------------------------------------------------------------------
+ * Print styles — "Exporter en PDF" on the redaction page uses window.print()
+ * which opens the native print dialog; users can "Save as PDF". These rules
+ * strip the dark UI chrome and lay sections out as a plain white document.
+ * --------------------------------------------------------------------------- */
+@media print {
+  html, body {
+    background: white !important;
+    color: black !important;
+    font-size: 11pt;
+  }
+  .no-print,
+  header,
+  footer,
+  nav,
+  button,
+  [role="dialog"] {
+    display: none !important;
+  }
+  .print-only {
+    display: block !important;
+  }
+  main {
+    padding: 0 !important;
+    max-width: none !important;
+  }
+  article {
+    page-break-inside: avoid;
+    break-inside: avoid;
+    border: none !important;
+    background: white !important;
+    box-shadow: none !important;
+    padding: 0 !important;
+    margin-bottom: 1.5rem !important;
+  }
+  textarea {
+    border: none !important;
+    background: transparent !important;
+    color: black !important;
+    resize: none !important;
+    height: auto !important;
+    min-height: 0 !important;
+    overflow: visible !important;
+    padding: 0 !important;
+    font: inherit !important;
+    white-space: pre-wrap !important;
+  }
+  h1, h2, h3 {
+    color: black !important;
+    page-break-after: avoid;
+  }
+}
+
+/* The print-only block must be hidden on screen — flipped visible by the
+   `@media print` rule above. */
+.print-only {
+  display: none;
+}

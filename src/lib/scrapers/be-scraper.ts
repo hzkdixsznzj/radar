@@ -218,9 +218,18 @@ function mapPublication(p: BDAPublication): TenderInsert | null {
   const buyer = pickLang(p.organisation?.organisationNames) || 'Unknown';
 
   const cpvCodes: string[] = [];
-  if (p.cpvMainCode?.code) cpvCodes.push(p.cpvMainCode.code);
+  const cpvDescriptions: string[] = [];
+  if (p.cpvMainCode?.code) {
+    cpvCodes.push(p.cpvMainCode.code);
+    const d = pickLang(p.cpvMainCode.descriptions);
+    if (d) cpvDescriptions.push(d);
+  }
   for (const extra of p.cpvAdditionalCodes ?? []) {
-    if (extra.code && !cpvCodes.includes(extra.code)) cpvCodes.push(extra.code);
+    if (extra.code && !cpvCodes.includes(extra.code)) {
+      cpvCodes.push(extra.code);
+      const d = pickLang(extra.descriptions);
+      if (d) cpvDescriptions.push(d);
+    }
   }
 
   const nutsCodes = p.nutsCodes ?? [];
@@ -243,6 +252,23 @@ function mapPublication(p: BDAPublication): TenderInsert | null {
     ? `https://www.publicprocurement.be/bda/publications/${p.publicationWorkspaceId}`
     : null;
 
+  // Build a rich full_text to feed the sector/keyword scoring. Titles on the
+  // BDA are often terse ("Accord-cadre - Dépannage") — pulling in the CPV
+  // descriptions, the procedure type, and the buyer name makes the full_text
+  // searchable enough that an HVAC profile actually matches a tender whose
+  // title only says "Entretien installations techniques" but whose CPV is
+  // 50720000 "Services de réparation et d'entretien d'installations de chauffage".
+  const procedure = p.dossier?.procurementProcedureType ?? '';
+  const fullText = [
+    title,
+    description,
+    cpvDescriptions.length ? `CPV: ${cpvDescriptions.join(' · ')}` : null,
+    procedure ? `Procédure: ${procedure}` : null,
+    buyer && buyer !== 'Unknown' ? `Adjudicateur: ${buyer}` : null,
+  ]
+    .filter(Boolean)
+    .join('\n\n');
+
   return {
     source: 'be_bulletin',
     external_id: externalId,
@@ -258,7 +284,7 @@ function mapPublication(p: BDAPublication): TenderInsert | null {
     estimated_value: null,
     currency: 'EUR',
     status,
-    full_text: `${title}\n\n${description}`,
+    full_text: fullText,
     documents_url: docsUrl,
   };
 }

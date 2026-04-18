@@ -96,6 +96,8 @@ export default function AnalysePage({
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
 
+  const [errorMsg, setErrorMsg] = useState<string | null>(null);
+
   useEffect(() => {
     let cancelled = false;
 
@@ -107,20 +109,41 @@ export default function AnalysePage({
         const tenderData: Tender = await tenderRes.json();
         if (!cancelled) setTender(tenderData);
 
-        // Trigger / fetch AI analysis
+        // Trigger / fetch AI analysis. The API returns `{ analysis }` —
+        // `cached: true` indicates we got a previously-stored result
+        // (no credit consumed).
         const analysisRes = await fetch('/api/analyze', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ tender_id: id }),
         });
-        if (!analysisRes.ok) throw new Error('Analysis failed');
-        const analysisData: AIAnalysis = await analysisRes.json();
+        if (!analysisRes.ok) {
+          if (analysisRes.status === 403) {
+            if (!cancelled) {
+              setErrorMsg(
+                'L\u2019analyse IA est réservée aux plans Pro et Business.',
+              );
+              setLoading(false);
+            }
+            return;
+          }
+          throw new Error('Analysis failed');
+        }
+        const payload = (await analysisRes.json()) as {
+          analysis: AIAnalysis;
+          cached?: boolean;
+        };
         if (!cancelled) {
-          setAnalysis(analysisData);
+          setAnalysis(payload.analysis);
           setLoading(false);
         }
       } catch {
-        if (!cancelled) setLoading(false);
+        if (!cancelled) {
+          setErrorMsg(
+            'Impossible de charger l\u2019analyse. Veuillez réessayer.',
+          );
+          setLoading(false);
+        }
       }
     }
 
@@ -318,16 +341,26 @@ export default function AnalysePage({
         ) : (
           <div className="py-16 text-center">
             <p className="text-text-muted">
-              Impossible de charger l&apos;analyse. Veuillez reessayer.
+              {errorMsg ?? 'Impossible de charger l\u2019analyse. Veuillez reessayer.'}
             </p>
-            <Button
-              variant="secondary"
-              size="md"
-              className="mt-4"
-              onClick={() => window.location.reload()}
-            >
-              Reessayer
-            </Button>
+            <div className="mt-4 flex flex-col items-center gap-2">
+              <Button
+                variant="secondary"
+                size="md"
+                onClick={() => window.location.reload()}
+              >
+                Réessayer
+              </Button>
+              {errorMsg?.includes('Pro et Business') && (
+                <Button
+                  variant="primary"
+                  size="md"
+                  onClick={() => router.push('/pricing')}
+                >
+                  Voir les offres
+                </Button>
+              )}
+            </div>
           </div>
         )}
       </main>

@@ -64,3 +64,25 @@ jobs:
 
       - name: Send daily push digest
         run: pnpm exec tsx scripts/notify.ts
+
+      - name: Warn users about deadlines approaching
+        run: pnpm exec tsx scripts/deadline-notify.ts
+
+  # Notify the maintainer in Discord (or any webhook) when the pipeline
+  # fails. Keep as a separate job so it only fires on failure — we don't
+  # want a noisy channel when things are green. Requires a single
+  # PIPELINE_ALERT_WEBHOOK secret (Discord/Slack/generic JSON webhook).
+  notify-failure:
+    needs: pipeline
+    if: failure()
+    runs-on: ubuntu-latest
+    steps:
+      - name: Post failure alert
+        if: ${{ secrets.PIPELINE_ALERT_WEBHOOK != '' }}
+        env:
+          WEBHOOK: ${{ secrets.PIPELINE_ALERT_WEBHOOK }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          curl -X POST -H 'Content-Type: application/json' \
+            -d "{\"content\":\"🚨 Radar daily pipeline failed. Run: $RUN_URL\"}" \
+            "$WEBHOOK" || true

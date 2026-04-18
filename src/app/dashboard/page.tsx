@@ -13,6 +13,8 @@ import {
 import { createServerSupabaseClient } from '@/lib/supabase/server';
 import { BottomNav } from '@/components/layout/bottom-nav';
 import { Badge } from '@/components/ui/badge';
+import { BelgiumMap } from '@/components/dashboard/belgium-map';
+import { nutsToFriendly } from '@/lib/geo/be-regions';
 import type {
   Profile,
   SavedTender,
@@ -78,6 +80,7 @@ export default async function DashboardPage() {
     wonCountRes,
     lostCountRes,
     recentRes,
+    regionsRes,
   ] = await Promise.all([
     supabase
       .from('tenders')
@@ -109,6 +112,13 @@ export default async function DashboardPage() {
       .eq('user_id', user.id)
       .order('created_at', { ascending: false })
       .limit(5),
+    // Fetch region + nuts_codes for all open tenders. One column per row,
+    // <10k rows max — cheap enough to aggregate in JS for the map tiles.
+    supabase
+      .from('tenders')
+      .select('region, nuts_codes')
+      .eq('status', 'open')
+      .limit(10000),
   ]);
 
   const feedCount = feedCountRes.count ?? 0;
@@ -122,6 +132,31 @@ export default async function DashboardPage() {
   const recentTenders = (recentRes.data ?? []) as unknown as SavedTenderRow[];
   const hasAnyActivity =
     feedCount > 0 || favoritesCount > 0 || draftingCount > 0 || finishedTotal > 0;
+
+  // ---- Aggregate open tenders per friendly province ----
+  // Primary signal: `region` (NUTS prefix). Fallback: first entry in
+  // `nuts_codes[]`. Anything we can't resolve is silently dropped so the
+  // counts reflect what's actually placeable on the map.
+  const regionRows = (regionsRes.data ?? []) as unknown as {
+    region: string | null;
+    nuts_codes: string[] | null;
+  }[];
+  const tendersByRegion: Record<string, number> = {};
+  for (const row of regionRows) {
+    const raw = row.region?.trim() || row.nuts_codes?.[0];
+    if (!raw) continue;
+    const friendly = nutsToFriendly(raw);
+    // `nutsToFriendly` returns the raw code when unresolved — skip those.
+    if (!friendly || friendly === raw) {
+      // If the raw value already matches a friendly name (e.g. stored
+      // pre-NUTS), keep it.
+      if (raw === friendly && !/^BE/i.test(raw)) {
+        tendersByRegion[raw] = (tendersByRegion[raw] ?? 0) + 1;
+      }
+      continue;
+    }
+    tendersByRegion[friendly] = (tendersByRegion[friendly] ?? 0) + 1;
+  }
 
   return (
     <div className="min-h-dvh bg-bg-primary pb-24">
@@ -187,6 +222,25 @@ export default async function DashboardPage() {
           />
         </section>
 
+        {/* Belgian province heatmap — click a tile to pre-filter the feed. */}
+        <section aria-label="Carte des marchés ouverts" className="space-y-3">
+          <div className="flex items-center justify-between">
+            <h3 className="font-display text-sm font-semibold uppercase tracking-wider text-text-primary">
+              Activité par province
+            </h3>
+            <Link
+              href="/feed"
+              className="inline-flex items-center gap-1 text-xs font-medium text-accent-blue hover:underline"
+            >
+              Voir le feed
+              <ArrowRight className="size-3" />
+            </Link>
+          </div>
+          <div className="rounded-xl border border-border bg-bg-card p-4">
+            <BelgiumMap counts={tendersByRegion} />
+          </div>
+        </section>
+
         {/* Quick actions */}
         <section aria-label="Actions rapides" className="grid grid-cols-1 gap-3 sm:grid-cols-2">
           <QuickActionLink
@@ -236,7 +290,9 @@ export default async function DashboardPage() {
                       href={
                         st.status === 'drafting' || st.status === 'submitted'
                           ? `/redaction/${st.id}`
-                          : `/feed`
+                          : st.tender?.id
+                            ? `/tender/${st.tender.id}`
+                            : `/feed`
                       }
                       className="group flex items-center gap-3 rounded-xl border border-border bg-bg-card p-4 transition-colors hover:bg-bg-card-hover"
                     >
