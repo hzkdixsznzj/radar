@@ -2,13 +2,37 @@ import { createClient } from '@supabase/supabase-js';
 import type { Tender, TenderType } from '@/types/database';
 
 // ---------------------------------------------------------------------------
-// Config
+// Config — proven-working TED v3 search endpoint
+// ---------------------------------------------------------------------------
+//
+// Validated live in `scripts/test-live-scan.ts` on 2026-04-17. The v3 search
+// endpoint is POST-only and uses a structured JSON body. A typical Belgium
+// 7-day query returns ~350 notices.
+//
+//   POST https://api.ted.europa.eu/v3/notices/search
+//   Content-Type: application/json
+//   Body: { "query": "...", "limit": N, "fields": [...] }
+//
+// Do NOT send sortField / sortOrder — the API rejects them.
+// Use `limit`, not `pageSize`.
 // ---------------------------------------------------------------------------
 
-const TED_API_BASE = 'https://ted.europa.eu/api/v3.0';
+const TED_ENDPOINT = 'https://api.ted.europa.eu/v3/notices/search';
 const PAGE_SIZE = 100;
 const MAX_RETRIES = 3;
 const RETRY_DELAY_MS = 2000;
+const DEFAULT_DAYS_BACK = 7;
+
+const TED_FIELDS = [
+  'publication-number',
+  'notice-title',
+  'classification-cpv',
+  'place-of-performance',
+  'publication-date',
+  'buyer-name',
+  'notice-type',
+  'links',
+] as const;
 
 function getSupabase() {
   const url = process.env.NEXT_PUBLIC_SUPABASE_URL;
@@ -23,9 +47,20 @@ function getSupabase() {
 // Helpers
 // ---------------------------------------------------------------------------
 
+function sleep(ms: number) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+/** TED query date format: YYYYMMDD (no dashes). */
+function daysAgoCompact(days: number): string {
+  const d = new Date();
+  d.setDate(d.getDate() - days);
+  return d.toISOString().slice(0, 10).replace(/-/g, '');
+}
+
 async function fetchWithRetry(
   url: string,
-  options: RequestInit = {},
+  options: RequestInit,
   retries = MAX_RETRIES,
 ): Promise<Response> {
   for (let attempt = 1; attempt <= retries; attempt++) {
@@ -43,7 +78,10 @@ async function fetchWithRetry(
         continue;
       }
 
-      throw new Error(`TED API responded with ${res.status}: ${res.statusText}`);
+      const bodyText = await res.text().catch(() => '');
+      throw new Error(
+        `TED API responded with ${res.status}: ${res.statusText}${bodyText ? ` — ${bodyText.slice(0, 300)}` : ''}`,
+      );
     } catch (err) {
       if (attempt === retries) throw err;
       const delay = RETRY_DELAY_MS * attempt;
@@ -57,117 +95,142 @@ async function fetchWithRetry(
   throw new Error('[TED] All retries exhausted');
 }
 
-function sleep(ms: number) {
-  return new Promise((resolve) => setTimeout(resolve, ms));
-}
-
-function sevenDaysAgo(): string {
-  const d = new Date();
-  d.setDate(d.getDate() - 7);
-  return d.toISOString().slice(0, 10); // YYYY-MM-DD
-}
-
 // ---------------------------------------------------------------------------
-// TED type mapping
+// TED notice shape (v3) and mapping to our `Tender` row
 // ---------------------------------------------------------------------------
 
 interface TEDNotice {
-  'notice-id'?: string;
   'publication-number'?: string;
-  title?: Record<string, string>;
-  description?: Record<string, string>;
-  'contracting-body'?: { name?: Record<string, string> };
-  'contract-nature'?: string;
-  'cpv-codes'?: string[];
-  'nuts-codes'?: string[];
+  'notice-title'?: Record<string, string | string[]> | string;
+  'classification-cpv'?: string[];
+  'place-of-performance'?: string[];
   'publication-date'?: string;
-  'deadline-receipt-tenders'?: string;
-  'estimated-total-value'?: { value?: number; currency?: string };
-  'document-url'?: string;
-  'full-text'?: Record<string, string>;
-  [key: string]: unknown;
+  'buyer-name'?: Record<string, string | string[]> | string;
+  'notice-type'?: string;
+  'notice-type-eforms'?: string;
+  links?: {
+    html?: Record<string, string>;
+    xml?: Record<string, string>;
+    pdf?: Record<string, string>;
+  };
 }
 
-function mapContractNature(nature?: string): TenderType {
-  switch (nature?.toLowerCase()) {
-    case 'works':
-      return 'works';
-    case 'supplies':
-      return 'supplies';
-    case 'services':
-    default:
-      return 'services';
+interface TEDSearchResponse {
+  notices?: TEDNotice[];
+  totalNoticeCount?: number;
+}
+
+/**
+ * Multilingual picker: prefer French, then Dutch, then English, then any.
+ * TED values may be strings, arrays, or nested objects of strings.
+ */
+function pickLang(
+  obj: Record<string, string | string[]> | string | undefined,
+): string {
+  if (!obj) return '';
+  if (typeof obj === 'string') return obj;
+  const order = ['fra', 'nld', 'eng', 'deu'];
+  for (const lang of order) {
+    const v = obj[lang];
+    if (v) return Array.isArray(v) ? v[0] : v;
   }
+  const first = Object.values(obj)[0];
+  if (!first) return '';
+  return Array.isArray(first) ? first[0] : (first as string);
 }
 
-function pickLang(texts?: Record<string, string>): string {
-  if (!texts) return '';
-  return texts['EN'] || texts['FR'] || texts['NL'] || texts['DE'] || Object.values(texts)[0] || '';
+/**
+ * TED doesn't reliably expose "contract-nature" on the v3 search endpoint,
+ * so we infer tender type from the title keywords (fr/nl/en).
+ */
+function inferTenderType(title: string): TenderType {
+  const t = title.toLowerCase();
+  if (/\b(travaux|werken|works|construction|bouw|chantier)\b/.test(t)) return 'works';
+  if (/\b(fourniture|fournitures|leveringen|levering|supplies|supply|achat|aankoop)\b/.test(t)) {
+    return 'supplies';
+  }
+  return 'services';
 }
 
-function mapNoticeToTender(notice: TEDNotice): Omit<Tender, 'id' | 'created_at' | 'updated_at'> {
-  const externalId =
-    notice['publication-number'] || notice['notice-id'] || `ted-${Date.now()}`;
+/**
+ * `place-of-performance` is a list of NUTS codes like ["BE213", "BEL"].
+ * Pick the first Belgian sub-region (e.g. BE213 / BE2) and fall back to "BE".
+ */
+function pickRegion(nutsCodes: string[]): string {
+  for (const code of nutsCodes) {
+    if (code.startsWith('BE') && code !== 'BEL' && code !== 'BE') return code;
+  }
+  return 'BE';
+}
 
-  const nutsRaw = notice['nuts-codes'] ?? [];
-  const region = nutsRaw.length > 0 ? nutsRaw[0] : 'BE';
+function mapNoticeToTender(
+  notice: TEDNotice,
+): Omit<Tender, 'id' | 'created_at' | 'updated_at'> {
+  const externalId = notice['publication-number'] ?? `ted-${Date.now()}`;
+  const title = pickLang(notice['notice-title']) || 'Untitled';
+  const buyer = pickLang(notice['buyer-name']) || 'Unknown';
+  const nutsCodes = notice['place-of-performance'] ?? [];
+  const htmlLink =
+    notice.links?.html?.fra ??
+    notice.links?.html?.nld ??
+    notice.links?.html?.eng ??
+    (notice.links?.html ? Object.values(notice.links.html)[0] : undefined) ??
+    null;
+
+  // Normalise publication-date (may come with timezone suffix like "+02:00")
+  const rawDate = notice['publication-date'] ?? new Date().toISOString();
+  const publicationDate = rawDate.split('+')[0];
 
   return {
     source: 'ted',
     external_id: externalId,
-    title: pickLang(notice.title) || 'Untitled',
-    description: pickLang(notice.description) || '',
-    contracting_authority: pickLang(notice['contracting-body']?.name) || 'Unknown',
-    tender_type: mapContractNature(notice['contract-nature']),
-    cpv_codes: notice['cpv-codes'] ?? [],
-    nuts_codes: nutsRaw,
-    region,
-    publication_date: notice['publication-date'] ?? new Date().toISOString(),
-    deadline: notice['deadline-receipt-tenders'] ?? '',
-    estimated_value: notice['estimated-total-value']?.value ?? null,
-    currency: notice['estimated-total-value']?.currency ?? 'EUR',
+    title,
+    description: title, // v3 search fields don't return a description body
+    contracting_authority: buyer,
+    tender_type: inferTenderType(title),
+    cpv_codes: notice['classification-cpv'] ?? [],
+    nuts_codes: nutsCodes,
+    region: pickRegion(nutsCodes),
+    publication_date: publicationDate,
+    deadline: '',
+    estimated_value: null,
+    currency: 'EUR',
     status: 'open',
-    full_text: pickLang(notice['full-text']) || pickLang(notice.description) || '',
-    documents_url: notice['document-url'] ?? null,
+    full_text: title,
+    documents_url: htmlLink,
   };
 }
 
 // ---------------------------------------------------------------------------
-// Fetch pages
+// Fetch a single page from TED
 // ---------------------------------------------------------------------------
 
-interface TEDSearchResponse {
-  results?: TEDNotice[];
-  total?: number;
-  page?: number;
-  pages?: number;
-}
+async function fetchPage(
+  sinceCompact: string,
+  limit: number,
+): Promise<TEDSearchResponse> {
+  const body = {
+    query: `place-of-performance=BEL AND publication-date>=${sinceCompact}`,
+    limit,
+    fields: [...TED_FIELDS],
+  };
 
-async function fetchPage(page: number): Promise<TEDSearchResponse> {
-  const since = sevenDaysAgo();
+  console.log(`[TED] POST ${TED_ENDPOINT} — query: ${body.query} (limit=${limit})`);
 
-  const params = new URLSearchParams({
-    q: 'TD=["CN"] AND CY=[BE]', // Contract notices from Belgium
-    scope: '3', // active notices
-    'page-size': String(PAGE_SIZE),
-    page: String(page),
-    'sort-field': 'publication-date',
-    'sort-order': 'desc',
-    'publication-date': `>=${since}`,
-  });
-
-  const url = `${TED_API_BASE}/notices/search?${params}`;
-  console.log(`[TED] Fetching page ${page}: ${url}`);
-
-  const res = await fetchWithRetry(url, {
-    headers: { Accept: 'application/json' },
+  const res = await fetchWithRetry(TED_ENDPOINT, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      Accept: 'application/json',
+    },
+    body: JSON.stringify(body),
   });
 
   return (await res.json()) as TEDSearchResponse;
 }
 
 // ---------------------------------------------------------------------------
-// Upsert
+// Upsert into Supabase
 // ---------------------------------------------------------------------------
 
 async function upsertTenders(
@@ -179,7 +242,10 @@ async function upsertTenders(
 
   const { data, error } = await supabase
     .from('tenders')
-    .upsert(tenders, { onConflict: 'source,external_id', ignoreDuplicates: false })
+    .upsert(tenders, {
+      onConflict: 'source,external_id',
+      ignoreDuplicates: false,
+    })
     .select('id');
 
   if (error) {
@@ -191,44 +257,48 @@ async function upsertTenders(
 }
 
 // ---------------------------------------------------------------------------
-// Main
+// Main entry point
 // ---------------------------------------------------------------------------
 
-export async function scrapeTED(): Promise<number> {
-  console.log('[TED] Starting scrape of Belgian tenders from the last 7 days...');
+/**
+ * Scrape Belgian tenders from TED for the last {daysBack} days and upsert
+ * them into the `tenders` table. Returns the number of rows upserted.
+ */
+export async function scrapeTED(daysBack: number = DEFAULT_DAYS_BACK): Promise<number> {
+  console.log(
+    `[TED] Starting scrape of Belgian tenders from the last ${daysBack} days...`,
+  );
 
-  let totalUpserted = 0;
-  let currentPage = 1;
-  let totalPages = 1;
+  const sinceCompact = daysAgoCompact(daysBack);
+  const response = await fetchPage(sinceCompact, PAGE_SIZE);
+  const notices = response.notices ?? [];
 
-  do {
-    const response = await fetchPage(currentPage);
-    const notices = response.results ?? [];
-    totalPages = response.pages ?? 1;
+  console.log(
+    `[TED] Received ${notices.length} notices (total available: ${response.totalNoticeCount ?? '?'})`,
+  );
 
-    console.log(
-      `[TED] Page ${currentPage}/${totalPages} — ${notices.length} notices received`,
-    );
+  if (notices.length === 0) {
+    console.log('[TED] No notices to upsert.');
+    return 0;
+  }
 
-    if (notices.length === 0) break;
+  // Deduplicate by external_id within this batch (TED can occasionally
+  // repeat across pages) before sending to Supabase.
+  const mapped = notices.map(mapNoticeToTender);
+  const seen = new Set<string>();
+  const unique = mapped.filter((t) => {
+    if (seen.has(t.external_id)) return false;
+    seen.add(t.external_id);
+    return true;
+  });
 
-    const mapped = notices.map(mapNoticeToTender);
-    const count = await upsertTenders(mapped);
-    totalUpserted += count;
-
-    console.log(`[TED] Upserted ${count} tenders from page ${currentPage}`);
-
-    currentPage++;
-    // Be polite to the API
-    if (currentPage <= totalPages) await sleep(500);
-  } while (currentPage <= totalPages);
-
-  console.log(`[TED] Scrape complete. Total upserted: ${totalUpserted}`);
-  return totalUpserted;
+  const count = await upsertTenders(unique);
+  console.log(`[TED] Scrape complete. Upserted ${count} tenders.`);
+  return count;
 }
 
 // ---------------------------------------------------------------------------
-// Standalone entry point
+// Standalone entry point (used by `npm run scrape:ted`)
 // ---------------------------------------------------------------------------
 
 async function main() {
@@ -243,8 +313,7 @@ async function main() {
 }
 
 // Run when executed directly (tsx / ts-node)
-const isMain =
-  typeof require !== 'undefined' && require.main === module;
+const isMain = typeof require !== 'undefined' && require.main === module;
 
 if (isMain) {
   main();

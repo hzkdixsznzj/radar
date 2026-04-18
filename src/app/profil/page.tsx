@@ -1,7 +1,9 @@
 'use client';
 
 import { useState, useEffect, useCallback, useMemo } from 'react';
-import { motion } from 'framer-motion';
+import Link from 'next/link';
+import { useRouter } from 'next/navigation';
+import { motion, AnimatePresence } from 'framer-motion';
 import {
   Building2,
   Tag,
@@ -18,6 +20,9 @@ import {
   X,
   Plus,
   FileText,
+  ArrowLeft,
+  Radar,
+  CheckCircle2,
 } from 'lucide-react';
 import clsx from 'clsx';
 import { createClient } from '@/lib/supabase/client';
@@ -101,12 +106,14 @@ const PLAN_LABELS: Record<
 // ----------------------------------------------------------------
 
 export default function ProfilPage() {
+  const router = useRouter();
   const [profile, setProfile] = useState<Profile | null>(null);
   const [subscription, setSubscription] = useState<Subscription | null>(null);
   const [userEmail, setUserEmail] = useState('');
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [saveSuccess, setSaveSuccess] = useState(false);
+  const [saveError, setSaveError] = useState<string | null>(null);
   const [showDeleteModal, setShowDeleteModal] = useState(false);
   const [deleteConfirmText, setDeleteConfirmText] = useState('');
   const [deleting, setDeleting] = useState(false);
@@ -135,7 +142,10 @@ export default function ProfilPage() {
       const {
         data: { user },
       } = await supabase.auth.getUser();
-      if (!user) return;
+      if (!user) {
+        router.replace('/login');
+        return;
+      }
 
       setUserEmail(user.email ?? '');
 
@@ -171,7 +181,7 @@ export default function ProfilPage() {
     } finally {
       setLoading(false);
     }
-  }, [supabase]);
+  }, [supabase, router]);
 
   useEffect(() => {
     fetchProfile();
@@ -183,32 +193,51 @@ export default function ProfilPage() {
     if (!profile) return;
     setSaving(true);
     setSaveSuccess(false);
+    setSaveError(null);
 
     try {
-      const res = await fetch('/api/profile', {
-        method: 'PATCH',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          company_name: companyName,
-          sectors,
-          certifications,
-          regions,
-          budget_ranges: budgetRanges,
-          keywords,
-          company_description: description,
-        }),
-      });
-
-      if (res.ok) {
-        setSaveSuccess(true);
-        setTimeout(() => setSaveSuccess(false), 3000);
+      // Upsert directly via Supabase so updated_at is refreshed and the row
+      // is created if it does not yet exist.
+      const {
+        data: { user },
+      } = await supabase.auth.getUser();
+      if (!user) {
+        setSaveError('Session expirée. Reconnectez-vous.');
+        return;
       }
+
+      const payload = {
+        user_id: user.id,
+        company_name: companyName.trim(),
+        sectors,
+        certifications,
+        regions,
+        budget_ranges: budgetRanges,
+        keywords,
+        company_description: description.trim(),
+        onboarding_completed: true,
+        updated_at: new Date().toISOString(),
+      };
+
+      const { error: upsertError } = await supabase
+        .from('profiles')
+        .upsert(payload, { onConflict: 'user_id' });
+
+      if (upsertError) {
+        setSaveError('Erreur lors de la sauvegarde. Veuillez réessayer.');
+        return;
+      }
+
+      setSaveSuccess(true);
+      setTimeout(() => setSaveSuccess(false), 3000);
     } catch (err) {
       console.error('Failed to save profile:', err);
+      setSaveError('Une erreur inattendue est survenue.');
     } finally {
       setSaving(false);
     }
   }, [
+    supabase,
     profile,
     companyName,
     sectors,
@@ -285,11 +314,26 @@ export default function ProfilPage() {
   if (loading) {
     return (
       <div className="min-h-dvh bg-bg-primary pb-24">
-        <header className="px-4 pt-6 pb-4 safe-top">
+        <header className="flex items-center gap-3 px-4 pt-4 pb-2 safe-top">
+          <Link
+            href="/dashboard"
+            className="flex size-10 items-center justify-center rounded-xl bg-bg-card text-text-secondary transition-colors hover:bg-bg-card-hover hover:text-text-primary"
+          >
+            <ArrowLeft className="size-5" />
+          </Link>
+          <Link
+            href="/"
+            className="flex items-center gap-2 font-display text-lg font-bold text-text-primary"
+          >
+            <Radar className="size-5 text-accent-blue" />
+            Radar
+          </Link>
+        </header>
+        <div className="px-4 pt-4 space-y-3">
           <Skeleton className="h-7 w-32 mb-1" />
           <Skeleton className="h-4 w-48" />
-        </header>
-        <div className="px-4 space-y-6">
+        </div>
+        <div className="px-4 mt-6 space-y-6">
           {Array.from({ length: 4 }).map((_, i) => (
             <div key={i} className="space-y-3">
               <Skeleton className="h-4 w-24" />
@@ -306,13 +350,31 @@ export default function ProfilPage() {
 
   return (
     <div className="min-h-dvh bg-bg-primary pb-24">
-      {/* Header */}
-      <header className="px-4 pt-6 pb-2 safe-top">
+      {/* Header — back nav + Radar logo (matches login/signup pattern) */}
+      <header className="flex items-center gap-3 px-4 pt-4 pb-2 safe-top">
+        <Link
+          href="/dashboard"
+          aria-label="Retour au dashboard"
+          className="flex size-10 items-center justify-center rounded-xl bg-bg-card text-text-secondary transition-colors hover:bg-bg-card-hover hover:text-text-primary"
+        >
+          <ArrowLeft className="size-5" />
+        </Link>
+        <Link
+          href="/"
+          className="flex items-center gap-2 font-display text-lg font-bold text-text-primary"
+        >
+          <Radar className="size-5 text-accent-blue" />
+          Radar
+        </Link>
+      </header>
+
+      {/* Page title */}
+      <div className="px-4 pt-4 pb-2">
         <h1 className="text-xl font-bold font-display text-text-primary">
           Mon profil
         </h1>
         <p className="text-sm text-text-muted mt-0.5">{userEmail}</p>
-      </header>
+      </div>
 
       <main className="px-4 pt-4 space-y-8">
         {/* ============================================================ */}
@@ -437,7 +499,34 @@ export default function ProfilPage() {
           >
             {saveSuccess ? 'Sauvegardé !' : 'Sauvegarder'}
           </Button>
+
+          {saveError && (
+            <p
+              className="rounded-lg bg-accent-red-soft p-3 text-center text-sm text-accent-red"
+              role="alert"
+            >
+              {saveError}
+            </p>
+          )}
         </section>
+
+        {/* Toast — save success */}
+        <AnimatePresence>
+          {saveSuccess && (
+            <motion.div
+              initial={{ opacity: 0, y: 20 }}
+              animate={{ opacity: 1, y: 0 }}
+              exit={{ opacity: 0, y: 20 }}
+              transition={{ duration: 0.2, ease: 'easeOut' }}
+              role="status"
+              aria-live="polite"
+              className="fixed bottom-24 left-1/2 z-50 -translate-x-1/2 flex items-center gap-2 rounded-full border border-accent-green/30 bg-accent-green-soft px-4 py-2.5 text-sm font-medium text-accent-green shadow-lg"
+            >
+              <CheckCircle2 className="size-4" />
+              Profil mis à jour
+            </motion.div>
+          )}
+        </AnimatePresence>
 
         {/* ============================================================ */}
         {/* SUBSCRIPTION                                                  */}

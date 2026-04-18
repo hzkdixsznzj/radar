@@ -5,7 +5,7 @@ import Link from 'next/link';
 import { createClient } from '@/lib/supabase/client';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
-import { Mail } from 'lucide-react';
+import { Mail, ArrowLeft, Radar } from 'lucide-react';
 
 export default function LoginPage() {
   const [email, setEmail] = useState('');
@@ -65,7 +65,20 @@ export default function LoginPage() {
 
   if (success) {
     return (
-      <div className="flex min-h-dvh items-center justify-center px-4">
+      <div className="flex min-h-dvh flex-col px-4">
+        <header className="flex items-center gap-3 pt-4 pb-2 safe-top">
+          <Link
+            href="/"
+            className="flex size-10 items-center justify-center rounded-xl bg-bg-card text-text-secondary transition-colors hover:bg-bg-card-hover hover:text-text-primary"
+          >
+            <ArrowLeft className="size-5" />
+          </Link>
+          <Link href="/" className="flex items-center gap-2 font-display text-lg font-bold text-text-primary">
+            <Radar className="size-5 text-accent-blue" />
+            Radar
+          </Link>
+        </header>
+        <div className="flex flex-1 items-center justify-center">
         <div className="w-full max-w-sm rounded-2xl border border-border bg-bg-card p-8 text-center">
           <div className="mx-auto mb-4 flex size-12 items-center justify-center rounded-full bg-accent-green-soft">
             <Mail className="size-6 text-accent-green" />
@@ -88,19 +101,35 @@ export default function LoginPage() {
             Utiliser une autre adresse
           </button>
         </div>
+        </div>
       </div>
     );
   }
 
   return (
-    <div className="flex min-h-dvh items-center justify-center px-4">
+    <div className="flex min-h-dvh flex-col px-4">
+      {/* Back header */}
+      <header className="flex items-center gap-3 pt-4 pb-2 safe-top">
+        <Link
+          href="/"
+          className="flex size-10 items-center justify-center rounded-xl bg-bg-card text-text-secondary transition-colors hover:bg-bg-card-hover hover:text-text-primary"
+        >
+          <ArrowLeft className="size-5" />
+        </Link>
+        <Link href="/" className="flex items-center gap-2 font-display text-lg font-bold text-text-primary">
+          <Radar className="size-5 text-accent-blue" />
+          Radar
+        </Link>
+      </header>
+
+      <div className="flex flex-1 items-center justify-center">
       <div className="w-full max-w-sm">
         <div className="rounded-2xl border border-border bg-bg-card p-8">
           <div className="mb-6 text-center">
             <h1 className="font-display text-2xl font-bold text-text-primary">
               Bienvenue sur Radar
             </h1>
-            <p className="mt-1 text-sm text-text-secondary">
+            <p className="mt-2 text-sm text-text-secondary">
               Connectez-vous pour accéder à vos marchés publics
             </p>
           </div>
@@ -175,6 +204,7 @@ export default function LoginPage() {
             S&apos;inscrire
           </Link>
         </p>
+      </div>
       </div>
     </div>
   );

@@ -10,6 +10,12 @@ const WEIGHT_CPV = 20;
 const WEIGHT_BUDGET = 15;
 const WEIGHT_KEYWORD = 15;
 
+// When a tender has no sector match AND no CPV match, we consider the
+// keyword-only signal unreliable (e.g. BatiWal-construction scoring 43 on
+// a cleaning tender because its keyword "école" happened to match). Cap
+// the keyword contribution at this fraction of its weight in that case.
+const KEYWORD_CAP_WITHOUT_SECTOR_OR_CPV = 0.5;
+
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
@@ -167,29 +173,28 @@ function budgetFit(estimatedValue: number | null, budgetRanges: string[]): numbe
 }
 
 // ---------------------------------------------------------------------------
-// Main scoring function
+// Score breakdown (internal shared computation)
 // ---------------------------------------------------------------------------
 
-/**
- * Score a tender's relevance to a user profile.
- *
- * @returns A score between 0 and 100.
- *
- * Breakdown:
- *  - Sector match (title/description vs profile.sectors):   30 pts
- *  - Region match (NUTS / region vs profile.regions):       20 pts
- *  - CPV code relevance:                                    20 pts
- *  - Budget match (estimated_value vs profile.budget_ranges): 15 pts
- *  - Keyword match (profile.keywords in tender text):       15 pts
- */
-export function scoreTender(tender: Tender, profile: Profile): number {
+export interface ScoreBreakdown {
+  total: number;
+  sector: number;
+  region: number;
+  cpv: number;
+  budget: number;
+  keyword: number;
+}
+
+/** Shared computation used by both scoreTender() and scoreTenderBreakdown(). */
+function computeBreakdown(tender: Tender, profile: Profile): ScoreBreakdown {
   const searchableText = `${tender.title} ${tender.description} ${tender.full_text}`;
 
   // --- Sector match (30 pts) ---
   const sectorHits = containsAny(searchableText, profile.sectors);
-  const sectorRatio = profile.sectors.length > 0
-    ? Math.min(sectorHits / profile.sectors.length, 1.0)
-    : 0;
+  const sectorRatio =
+    profile.sectors.length > 0
+      ? Math.min(sectorHits / profile.sectors.length, 1.0)
+      : 0;
   const sectorScore = sectorRatio * WEIGHT_SECTOR;
 
   // --- Region match (20 pts) ---
@@ -202,9 +207,10 @@ export function scoreTender(tender: Tender, profile: Profile): number {
     // Fall back to text-based region matching
     const regionText = `${tender.region} ${tender.nuts_codes.join(' ')}`;
     const regionHits = containsAny(regionText, profile.regions);
-    const regionRatio = profile.regions.length > 0
-      ? Math.min(regionHits / profile.regions.length, 1.0)
-      : 0;
+    const regionRatio =
+      profile.regions.length > 0
+        ? Math.min(regionHits / profile.regions.length, 1.0)
+        : 0;
     regionScore = regionRatio * WEIGHT_REGION;
   }
 
@@ -218,11 +224,101 @@ export function scoreTender(tender: Tender, profile: Profile): number {
 
   // --- Keyword match (15 pts) ---
   const keywordHits = containsAny(searchableText, profile.keywords);
-  const keywordRatio = profile.keywords.length > 0
-    ? Math.min(keywordHits / profile.keywords.length, 1.0)
-    : 0;
-  const keywordScore = keywordRatio * WEIGHT_KEYWORD;
+  const keywordRatio =
+    profile.keywords.length > 0
+      ? Math.min(keywordHits / profile.keywords.length, 1.0)
+      : 0;
+  let keywordScore = keywordRatio * WEIGHT_KEYWORD;
 
-  const total = sectorScore + regionScore + cpvScore + budgetScore + keywordScore;
-  return Math.round(Math.min(Math.max(total, 0), 100));
+  // --- Keyword leak guard ---
+  // If neither the sector nor the CPV matched, a keyword-only hit is
+  // unreliable (e.g. construction company scoring high on a cleaning
+  // tender because of a stray "école" match). Cap the keyword contribution
+  // to prevent false-positive ranking.
+  if (sectorScore === 0 && cpvScore === 0) {
+    const cap = WEIGHT_KEYWORD * KEYWORD_CAP_WITHOUT_SECTOR_OR_CPV;
+    if (keywordScore > cap) keywordScore = cap;
+  }
+
+  const rawTotal =
+    sectorScore + regionScore + cpvScore + budgetScore + keywordScore;
+  const total = Math.round(Math.min(Math.max(rawTotal, 0), 100));
+
+  return {
+    total,
+    sector: Math.round(sectorScore),
+    region: Math.round(regionScore),
+    cpv: Math.round(cpvScore),
+    budget: Math.round(budgetScore),
+    keyword: Math.round(keywordScore),
+  };
+}
+
+// ---------------------------------------------------------------------------
+// Public API
+// ---------------------------------------------------------------------------
+
+/**
+ * Score a tender's relevance to a user profile.
+ *
+ * @returns A score between 0 and 100.
+ *
+ * Breakdown:
+ *  - Sector match (title/description vs profile.sectors):   30 pts
+ *  - Region match (NUTS / region vs profile.regions):       20 pts
+ *  - CPV code relevance:                                    20 pts
+ *  - Budget match (estimated_value vs profile.budget_ranges): 15 pts
+ *  - Keyword match (profile.keywords in tender text):       15 pts
+ *
+ * Keyword leak guard: if both sector and CPV scores are 0, the keyword
+ * contribution is capped at 50% of its weight (max 7.5 pts instead of 15)
+ * to prevent unrelated tenders from ranking high on a single stray
+ * keyword match.
+ */
+export function scoreTender(tender: Tender, profile: Profile): number {
+  return computeBreakdown(tender, profile).total;
+}
+
+/**
+ * Same scoring as `scoreTender()` but returns the per-dimension breakdown
+ * for debugging / explainability. Useful to answer "why did this tender
+ * score X?" in the UI or in logs.
+ */
+export function scoreTenderBreakdown(
+  tender: Tender,
+  profile: Profile,
+): ScoreBreakdown {
+  return computeBreakdown(tender, profile);
+}
+
+/**
+ * Secondary-sort comparator for ranking tenders.
+ *
+ * Primary key: score (descending — higher first).
+ * Secondary key: `publication_date` (descending — more recent first) when
+ * scores tie.
+ *
+ * Use with `Array.prototype.sort`:
+ *
+ *   tenders.sort((a, b) =>
+ *     compareTenders(a, b, scores.get(a.id)!, scores.get(b.id)!)
+ *   );
+ */
+export function compareTenders(
+  a: Tender,
+  b: Tender,
+  scoreA: number,
+  scoreB: number,
+): number {
+  if (scoreB !== scoreA) return scoreB - scoreA;
+
+  // Fall back to publication_date; missing dates sort last.
+  const ta = a.publication_date ? Date.parse(a.publication_date) : NaN;
+  const tb = b.publication_date ? Date.parse(b.publication_date) : NaN;
+  const aValid = !Number.isNaN(ta);
+  const bValid = !Number.isNaN(tb);
+  if (aValid && bValid) return tb - ta;
+  if (aValid) return -1;
+  if (bValid) return 1;
+  return 0;
 }

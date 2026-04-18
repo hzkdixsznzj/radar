@@ -1,403 +1,378 @@
-'use client';
-
-import { useState, useEffect, useCallback, useMemo } from 'react';
-import { motion, AnimatePresence } from 'framer-motion';
+import { redirect } from 'next/navigation';
+import Link from 'next/link';
 import {
-  ArrowDownAZ,
-  ArrowUpDown,
-  Calendar,
-  Flame,
-  Clock,
-  CheckCircle2,
+  Compass,
+  BookmarkCheck,
+  FileEdit,
+  Trophy,
   ArrowRight,
-  Inbox,
+  Sparkles,
+  Radar as RadarIcon,
+  UserCog,
 } from 'lucide-react';
-import clsx from 'clsx';
+import { createServerSupabaseClient } from '@/lib/supabase/server';
 import { BottomNav } from '@/components/layout/bottom-nav';
 import { Badge } from '@/components/ui/badge';
-import {
-  StatsCards,
-  StatsCardsSkeleton,
-  type DashboardStats,
-} from '@/components/dashboard/stats-cards';
-import {
-  SavedTenderItem,
-  SavedTenderItemSkeleton,
-} from '@/components/dashboard/saved-tender-item';
-import type { SavedTender, SavedTenderStatus, Submission } from '@/types/database';
+import type {
+  Profile,
+  SavedTender,
+  SavedTenderStatus,
+  Tender,
+} from '@/types/database';
 
-type FilterTab = 'all' | SavedTenderStatus;
-type SortKey = 'deadline' | 'score' | 'date' | 'status';
+/* -------------------------------------------------------------------------- */
+/*  Dashboard — Server Component                                              */
+/*                                                                            */
+/*  - Auth: redirects to /login when no user                                  */
+/*  - Onboarding: redirects to /onboarding when profile.onboarding_completed  */
+/*    is false                                                                */
+/*  - Renders 4 KPI cards + quick actions + recent activity                   */
+/* -------------------------------------------------------------------------- */
 
-const FILTER_TABS: { key: FilterTab; label: string }[] = [
-  { key: 'all', label: 'Tous' },
-  { key: 'new', label: 'Nouveau' },
-  { key: 'analyzing', label: 'En cours' },
-  { key: 'submitted', label: 'Soumis' },
-  { key: 'won', label: 'Terminé' },
-];
+type SavedTenderRow = SavedTender & { tender: Tender | null };
 
-const SORT_OPTIONS: { key: SortKey; label: string; icon: typeof Calendar }[] = [
-  { key: 'deadline', label: 'Échéance', icon: Clock },
-  { key: 'score', label: 'Score', icon: Flame },
-  { key: 'date', label: 'Date ajout', icon: Calendar },
-  { key: 'status', label: 'Statut', icon: ArrowDownAZ },
-];
-
-const STATUS_ORDER: Record<SavedTenderStatus, number> = {
-  new: 0,
-  analyzing: 1,
-  drafting: 2,
-  submitted: 3,
-  won: 4,
-  lost: 5,
+type StatusBadgeConfig = {
+  label: string;
+  color: 'blue' | 'green' | 'orange' | 'red' | 'gray';
 };
 
-const EMPTY_MESSAGES: Record<FilterTab, { title: string; description: string }> = {
-  all: {
-    title: 'Aucun marché sauvegardé',
-    description: 'Parcourez le feed pour trouver des marchés pertinents.',
-  },
-  new: {
-    title: 'Aucun nouveau marché',
-    description: 'Les nouveaux marchés sauvegardés apparaîtront ici.',
-  },
-  analyzing: {
-    title: 'Aucune analyse en cours',
-    description: 'Lancez une analyse sur un marché sauvegardé.',
-  },
-  drafting: {
-    title: 'Aucune soumission en cours',
-    description: 'Commencez à rédiger une soumission.',
-  },
-  submitted: {
-    title: 'Aucune soumission envoyée',
-    description: 'Vos soumissions terminées apparaîtront ici.',
-  },
-  won: {
-    title: 'Aucun marché terminé',
-    description: 'Les marchés gagnés ou perdus apparaîtront ici.',
-  },
-  lost: {
-    title: 'Aucun marché perdu',
-    description: 'Les marchés perdus apparaîtront ici.',
-  },
+const STATUS_CONFIG: Record<SavedTenderStatus, StatusBadgeConfig> = {
+  new: { label: 'Nouveau', color: 'blue' },
+  analyzing: { label: 'Analyse', color: 'orange' },
+  drafting: { label: 'Rédaction', color: 'orange' },
+  submitted: { label: 'Soumis', color: 'green' },
+  won: { label: 'Gagné', color: 'green' },
+  lost: { label: 'Perdu', color: 'red' },
 };
 
-export default function DashboardPage() {
-  const [savedTenders, setSavedTenders] = useState<SavedTender[]>([]);
-  const [submissions, setSubmissions] = useState<Submission[]>([]);
-  const [loading, setLoading] = useState(true);
-  const [filter, setFilter] = useState<FilterTab>('all');
-  const [sortBy, setSortBy] = useState<SortKey>('deadline');
-  const [showSortMenu, setShowSortMenu] = useState(false);
+export default async function DashboardPage() {
+  const supabase = await createServerSupabaseClient();
 
-  const fetchData = useCallback(async () => {
-    setLoading(true);
-    try {
-      const [tendersRes, submissionsRes] = await Promise.all([
-        fetch('/api/saved-tenders'),
-        fetch('/api/submissions').catch(() => null),
-      ]);
+  // ---- Auth check ----
+  const {
+    data: { user },
+  } = await supabase.auth.getUser();
 
-      if (tendersRes.ok) {
-        const data = await tendersRes.json();
-        setSavedTenders(data.saved_tenders ?? []);
-      }
+  if (!user) {
+    redirect('/login');
+  }
 
-      if (submissionsRes?.ok) {
-        const data = await submissionsRes.json();
-        setSubmissions(data.submissions ?? []);
-      }
-    } catch (err) {
-      console.error('Failed to fetch dashboard data:', err);
-    } finally {
-      setLoading(false);
-    }
-  }, []);
+  // ---- Profile / onboarding check ----
+  const profileRes = (await supabase
+    .from('profiles')
+    .select('*')
+    .eq('user_id', user.id)
+    .maybeSingle()) as unknown as { data: Profile | null };
 
-  useEffect(() => {
-    fetchData();
-  }, [fetchData]);
+  const profile = profileRes.data;
 
-  // Filter and sort
-  const filteredTenders = useMemo(() => {
-    let result = savedTenders;
+  if (!profile || profile.onboarding_completed === false) {
+    redirect('/onboarding');
+  }
 
-    if (filter !== 'all') {
-      if (filter === 'analyzing') {
-        result = result.filter(
-          (t) => t.status === 'analyzing' || t.status === 'drafting',
-        );
-      } else if (filter === 'won') {
-        result = result.filter(
-          (t) => t.status === 'won' || t.status === 'lost',
-        );
-      } else {
-        result = result.filter((t) => t.status === filter);
-      }
-    }
+  // ---- Fetch KPIs in parallel ----
+  const [
+    feedCountRes,
+    favoritesCountRes,
+    draftingCountRes,
+    wonCountRes,
+    lostCountRes,
+    recentRes,
+  ] = await Promise.all([
+    supabase
+      .from('tenders')
+      .select('id', { count: 'exact', head: true })
+      .eq('status', 'open'),
+    supabase
+      .from('saved_tenders')
+      .select('id', { count: 'exact', head: true })
+      .eq('user_id', user.id)
+      .in('status', ['new', 'analyzing', 'drafting']),
+    supabase
+      .from('saved_tenders')
+      .select('id', { count: 'exact', head: true })
+      .eq('user_id', user.id)
+      .eq('status', 'drafting'),
+    supabase
+      .from('saved_tenders')
+      .select('id', { count: 'exact', head: true })
+      .eq('user_id', user.id)
+      .eq('status', 'won'),
+    supabase
+      .from('saved_tenders')
+      .select('id', { count: 'exact', head: true })
+      .eq('user_id', user.id)
+      .eq('status', 'lost'),
+    supabase
+      .from('saved_tenders')
+      .select('*, tender:tenders(*)')
+      .eq('user_id', user.id)
+      .order('created_at', { ascending: false })
+      .limit(5),
+  ]);
 
-    return [...result].sort((a, b) => {
-      switch (sortBy) {
-        case 'deadline': {
-          const da = a.tender?.deadline ?? '';
-          const db = b.tender?.deadline ?? '';
-          return da.localeCompare(db);
-        }
-        case 'score': {
-          const sa = a.ai_analysis?.relevance_score ?? 0;
-          const sb = b.ai_analysis?.relevance_score ?? 0;
-          return sb - sa;
-        }
-        case 'date':
-          return new Date(b.created_at).getTime() - new Date(a.created_at).getTime();
-        case 'status':
-          return STATUS_ORDER[a.status] - STATUS_ORDER[b.status];
-        default:
-          return 0;
-      }
-    });
-  }, [savedTenders, filter, sortBy]);
+  const feedCount = feedCountRes.count ?? 0;
+  const favoritesCount = favoritesCountRes.count ?? 0;
+  const draftingCount = draftingCountRes.count ?? 0;
+  const wonCount = wonCountRes.count ?? 0;
+  const lostCount = lostCountRes.count ?? 0;
+  const finishedTotal = wonCount + lostCount;
+  const winRate = finishedTotal > 0 ? Math.round((wonCount / finishedTotal) * 100) : 0;
 
-  // Stats
-  const stats: DashboardStats = useMemo(() => {
-    const saved = savedTenders.length;
-    const submissionCount = submissions.length;
-    const won = savedTenders.filter((t) => t.status === 'won').length;
-    const submitted = savedTenders.filter((t) => t.status === 'submitted').length;
-    const total = won + submitted;
-    const rate = total > 0 ? Math.round((won / total) * 100) : 0;
-
-    return {
-      viewed: saved + Math.round(saved * 2.5),
-      saved,
-      submissions: submissionCount,
-      conversionRate: rate,
-      conversionTrend: rate > 0 ? 'up' : 'flat',
-    };
-  }, [savedTenders, submissions]);
-
-  // Handlers
-  const handleStatusChange = useCallback(
-    async (id: string, newStatus: SavedTenderStatus) => {
-      setSavedTenders((prev) =>
-        prev.map((t) => (t.id === id ? { ...t, status: newStatus } : t)),
-      );
-
-      try {
-        const res = await fetch(`/api/saved-tenders/${id}`, {
-          method: 'PATCH',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ status: newStatus }),
-        });
-
-        if (!res.ok) {
-          fetchData();
-        }
-      } catch {
-        fetchData();
-      }
-    },
-    [fetchData],
-  );
-
-  const handleDelete = useCallback(
-    async (id: string) => {
-      setSavedTenders((prev) => prev.filter((t) => t.id !== id));
-
-      try {
-        const res = await fetch(`/api/saved-tenders/${id}`, {
-          method: 'DELETE',
-        });
-
-        if (!res.ok) {
-          fetchData();
-        }
-      } catch {
-        fetchData();
-      }
-    },
-    [fetchData],
-  );
+  const recentTenders = (recentRes.data ?? []) as unknown as SavedTenderRow[];
+  const hasAnyActivity =
+    feedCount > 0 || favoritesCount > 0 || draftingCount > 0 || finishedTotal > 0;
 
   return (
     <div className="min-h-dvh bg-bg-primary pb-24">
       {/* Header */}
-      <header className="sticky top-0 z-30 bg-bg-primary/80 backdrop-blur-xl border-b border-border safe-top">
-        <div className="px-4 pt-4 pb-3">
-          <div className="flex items-center justify-between mb-3">
-            <div className="flex items-center gap-2.5">
-              <h1 className="text-xl font-bold font-display text-text-primary">
-                Mes opportunités
-              </h1>
-              {!loading && (
-                <Badge color="blue" size="sm">
-                  {savedTenders.length}
-                </Badge>
-              )}
-            </div>
-
-            {/* Sort toggle */}
-            <div className="relative">
-              <button
-                type="button"
-                onClick={() => setShowSortMenu((prev) => !prev)}
-                className="flex items-center gap-1.5 h-8 px-2.5 rounded-lg text-text-secondary hover:bg-bg-card transition-colors cursor-pointer"
-              >
-                <ArrowUpDown className="size-4" />
-                <span className="text-xs font-medium">
-                  {SORT_OPTIONS.find((s) => s.key === sortBy)?.label}
-                </span>
-              </button>
-
-              <AnimatePresence>
-                {showSortMenu && (
-                  <motion.div
-                    initial={{ opacity: 0, y: -4 }}
-                    animate={{ opacity: 1, y: 0 }}
-                    exit={{ opacity: 0, y: -4 }}
-                    transition={{ duration: 0.15 }}
-                    className="absolute right-0 top-full mt-1 z-50 w-40 rounded-lg border border-border bg-bg-card shadow-xl py-1"
-                  >
-                    {SORT_OPTIONS.map((option) => {
-                      const Icon = option.icon;
-                      return (
-                        <button
-                          key={option.key}
-                          type="button"
-                          onClick={() => {
-                            setSortBy(option.key);
-                            setShowSortMenu(false);
-                          }}
-                          className={clsx(
-                            'w-full flex items-center gap-2 px-3 py-2 text-xs transition-colors cursor-pointer',
-                            sortBy === option.key
-                              ? 'text-accent-blue bg-accent-blue-soft'
-                              : 'text-text-primary hover:bg-bg-card-hover',
-                          )}
-                        >
-                          <Icon className="size-3.5" />
-                          {option.label}
-                        </button>
-                      );
-                    })}
-                  </motion.div>
-                )}
-              </AnimatePresence>
-            </div>
+      <header className="sticky top-0 z-30 border-b border-border bg-bg-primary/80 backdrop-blur-xl safe-top">
+        <div className="flex items-center justify-between px-4 py-3">
+          <div className="flex items-center gap-2">
+            <RadarIcon className="size-5 text-accent-blue" />
+            <h1 className="font-display text-lg font-bold text-text-primary">
+              Tableau de bord
+            </h1>
           </div>
-
-          {/* Filter tabs */}
-          <div className="flex gap-1.5 overflow-x-auto scrollbar-none -mx-4 px-4">
-            {FILTER_TABS.map((tab) => (
-              <button
-                key={tab.key}
-                type="button"
-                onClick={() => setFilter(tab.key)}
-                className={clsx(
-                  'shrink-0 h-8 px-3.5 rounded-full text-xs font-medium transition-colors cursor-pointer',
-                  filter === tab.key
-                    ? 'bg-accent-blue text-white'
-                    : 'bg-bg-card text-text-secondary hover:bg-bg-card-hover',
-                )}
-              >
-                {tab.label}
-              </button>
-            ))}
-          </div>
+          <Link
+            href="/profil"
+            aria-label="Ouvrir le profil"
+            className="flex size-9 items-center justify-center rounded-lg text-text-muted transition-colors hover:bg-bg-card hover:text-text-primary"
+          >
+            <UserCog className="size-5" />
+          </Link>
         </div>
       </header>
 
-      {/* Content */}
-      <main className="px-4 pt-4 space-y-5">
-        {/* Stats cards */}
-        {loading ? (
-          <StatsCardsSkeleton />
-        ) : (
-          <StatsCards stats={stats} />
-        )}
-
-        {/* Tender list */}
-        <section>
-          {loading ? (
-            <div className="space-y-3">
-              {Array.from({ length: 5 }).map((_, i) => (
-                <SavedTenderItemSkeleton key={i} />
-              ))}
-            </div>
-          ) : filteredTenders.length === 0 ? (
-            <motion.div
-              initial={{ opacity: 0, y: 10 }}
-              animate={{ opacity: 1, y: 0 }}
-              className="flex flex-col items-center justify-center py-16 text-center"
-            >
-              <div className="flex size-16 items-center justify-center rounded-2xl bg-bg-card mb-4">
-                <Inbox className="size-7 text-text-muted" />
-              </div>
-              <h3 className="text-base font-semibold text-text-primary font-display mb-1">
-                {EMPTY_MESSAGES[filter].title}
-              </h3>
-              <p className="text-sm text-text-muted max-w-[240px]">
-                {EMPTY_MESSAGES[filter].description}
-              </p>
-            </motion.div>
-          ) : (
-            <motion.div
-              className="space-y-3"
-              initial="hidden"
-              animate="visible"
-              variants={{
-                visible: { transition: { staggerChildren: 0.05 } },
-              }}
-            >
-              {filteredTenders.map((st) => (
-                <motion.div
-                  key={st.id}
-                  variants={{
-                    hidden: { opacity: 0, y: 12 },
-                    visible: { opacity: 1, y: 0 },
-                  }}
-                  transition={{ duration: 0.25, ease: 'easeOut' }}
-                >
-                  <SavedTenderItem
-                    savedTender={st}
-                    onStatusChange={handleStatusChange}
-                    onDelete={handleDelete}
-                  />
-                </motion.div>
-              ))}
-            </motion.div>
-          )}
+      <main className="px-4 pt-5 space-y-6">
+        {/* Greeting */}
+        <section className="animate-slide-up">
+          <p className="text-sm text-text-muted">Bonjour,</p>
+          <h2 className="mt-0.5 font-display text-xl font-bold text-text-primary">
+            {profile.company_name || 'bienvenue'}
+          </h2>
         </section>
 
-        {/* Submissions link */}
-        {!loading && submissions.length > 0 && (
-          <div className="pt-2 pb-4">
-            <a
-              href="/submissions"
-              className="flex items-center justify-between p-4 rounded-xl border border-border bg-bg-card hover:bg-bg-card-hover transition-colors group"
-            >
-              <div className="flex items-center gap-3">
-                <div className="flex size-10 items-center justify-center rounded-lg bg-accent-green-soft">
-                  <CheckCircle2 className="size-5 text-accent-green" />
-                </div>
-                <div>
-                  <p className="text-sm font-semibold text-text-primary font-display">
-                    Voir les soumissions
-                  </p>
-                  <p className="text-xs text-text-muted">
-                    {submissions.length} soumission{submissions.length > 1 ? 's' : ''}
-                  </p>
-                </div>
-              </div>
-              <ArrowRight className="size-4 text-text-muted group-hover:text-text-primary transition-colors" />
-            </a>
+        {/* KPI cards */}
+        <section
+          aria-label="Indicateurs clés"
+          className="grid grid-cols-2 gap-3 sm:grid-cols-4"
+        >
+          <KpiCard
+            icon={<Compass className="size-4" />}
+            label="Marchés dans le feed"
+            value={feedCount}
+            accent="blue"
+          />
+          <KpiCard
+            icon={<BookmarkCheck className="size-4" />}
+            label="Favoris"
+            value={favoritesCount}
+            accent="green"
+          />
+          <KpiCard
+            icon={<FileEdit className="size-4" />}
+            label="Soumissions en cours"
+            value={draftingCount}
+            accent="orange"
+          />
+          <KpiCard
+            icon={<Trophy className="size-4" />}
+            label="Taux de victoire"
+            value={winRate}
+            suffix="%"
+            accent="green"
+            muted={finishedTotal === 0}
+            hint={finishedTotal === 0 ? 'Aucun résultat' : `${wonCount}/${finishedTotal}`}
+          />
+        </section>
+
+        {/* Quick actions */}
+        <section aria-label="Actions rapides" className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+          <QuickActionLink
+            href="/feed"
+            icon={<Compass className="size-5" />}
+            title="Voir le feed"
+            description="Parcourez les nouveaux marchés publics"
+            accent="blue"
+          />
+          <QuickActionLink
+            href="/profil"
+            icon={<UserCog className="size-5" />}
+            title="Mon profil"
+            description="Affinez vos critères pour mieux cibler"
+            accent="green"
+          />
+        </section>
+
+        {/* Recent activity */}
+        <section aria-label="Activité récente" className="space-y-3">
+          <div className="flex items-center justify-between">
+            <h3 className="font-display text-sm font-semibold uppercase tracking-wider text-text-primary">
+              Activité récente
+            </h3>
+            {recentTenders.length > 0 && (
+              <Link
+                href="/feed"
+                className="inline-flex items-center gap-1 text-xs font-medium text-accent-blue hover:underline"
+              >
+                Voir tout
+                <ArrowRight className="size-3" />
+              </Link>
+            )}
           </div>
-        )}
+
+          {recentTenders.length === 0 ? (
+            <EmptyState hasAnyActivity={hasAnyActivity} />
+          ) : (
+            <ul className="space-y-2">
+              {recentTenders.map((st) => {
+                const cfg = STATUS_CONFIG[st.status];
+                const title = st.tender?.title ?? 'Marché sans titre';
+                const authority = st.tender?.contracting_authority ?? '';
+                return (
+                  <li key={st.id}>
+                    <Link
+                      href={
+                        st.status === 'drafting' || st.status === 'submitted'
+                          ? `/redaction/${st.id}`
+                          : `/feed`
+                      }
+                      className="group flex items-center gap-3 rounded-xl border border-border bg-bg-card p-4 transition-colors hover:bg-bg-card-hover"
+                    >
+                      <div className="min-w-0 flex-1">
+                        <p className="truncate text-sm font-medium text-text-primary">
+                          {title}
+                        </p>
+                        {authority && (
+                          <p className="mt-0.5 truncate text-xs text-text-muted">
+                            {authority}
+                          </p>
+                        )}
+                      </div>
+                      <Badge color={cfg.color} size="sm">
+                        {cfg.label}
+                      </Badge>
+                      <ArrowRight className="size-4 shrink-0 text-text-muted transition-colors group-hover:text-text-primary" />
+                    </Link>
+                  </li>
+                );
+              })}
+            </ul>
+          )}
+        </section>
       </main>
 
       <BottomNav />
+    </div>
+  );
+}
+
+/* -------------------------------------------------------------------------- */
+/*  Sub-components                                                            */
+/* -------------------------------------------------------------------------- */
+
+type Accent = 'blue' | 'green' | 'orange' | 'red';
+
+const ACCENT_BG: Record<Accent, string> = {
+  blue: 'bg-accent-blue-soft text-accent-blue',
+  green: 'bg-accent-green-soft text-accent-green',
+  orange: 'bg-accent-orange-soft text-accent-orange',
+  red: 'bg-accent-red-soft text-accent-red',
+};
+
+function KpiCard({
+  icon,
+  label,
+  value,
+  suffix,
+  accent,
+  muted,
+  hint,
+}: {
+  icon: React.ReactNode;
+  label: string;
+  value: number;
+  suffix?: string;
+  accent: Accent;
+  muted?: boolean;
+  hint?: string;
+}) {
+  return (
+    <div className="rounded-xl border border-border bg-bg-card p-4">
+      <div className={`inline-flex rounded-lg p-1.5 ${ACCENT_BG[accent]}`}>
+        {icon}
+      </div>
+      <p className="mt-3 font-display text-2xl font-bold tabular-nums text-text-primary">
+        {muted ? '—' : value}
+        {!muted && suffix ? (
+          <span className="ml-0.5 text-sm font-medium text-text-secondary">
+            {suffix}
+          </span>
+        ) : null}
+      </p>
+      <p className="mt-0.5 text-xs text-text-muted">{label}</p>
+      {hint && !muted && (
+        <p className="mt-0.5 text-[11px] text-text-muted">{hint}</p>
+      )}
+    </div>
+  );
+}
+
+function QuickActionLink({
+  href,
+  icon,
+  title,
+  description,
+  accent,
+}: {
+  href: string;
+  icon: React.ReactNode;
+  title: string;
+  description: string;
+  accent: Accent;
+}) {
+  return (
+    <Link
+      href={href}
+      className="group flex items-center gap-4 rounded-xl border border-border bg-bg-card p-4 transition-colors hover:bg-bg-card-hover"
+    >
+      <div className={`flex size-11 items-center justify-center rounded-xl ${ACCENT_BG[accent]}`}>
+        {icon}
+      </div>
+      <div className="min-w-0 flex-1">
+        <p className="font-display text-sm font-semibold text-text-primary">
+          {title}
+        </p>
+        <p className="mt-0.5 truncate text-xs text-text-muted">{description}</p>
+      </div>
+      <ArrowRight className="size-4 shrink-0 text-text-muted transition-colors group-hover:text-text-primary" />
+    </Link>
+  );
+}
+
+function EmptyState({ hasAnyActivity }: { hasAnyActivity: boolean }) {
+  return (
+    <div className="flex flex-col items-center justify-center rounded-xl border border-dashed border-border bg-bg-card/40 py-10 text-center">
+      <div className="flex size-12 items-center justify-center rounded-2xl bg-accent-blue-soft text-accent-blue">
+        <Sparkles className="size-5" />
+      </div>
+      <p className="mt-4 font-display text-sm font-semibold text-text-primary">
+        {hasAnyActivity
+          ? 'Pas encore d’activité récente'
+          : 'Commencez par découvrir des marchés dans le feed'}
+      </p>
+      <p className="mt-1 max-w-[260px] text-xs text-text-muted">
+        Parcourez les marchés pertinents pour votre entreprise et sauvegardez
+        les plus prometteurs.
+      </p>
+      <Link
+        href="/feed"
+        className="mt-4 inline-flex items-center gap-1.5 rounded-lg bg-accent-blue px-4 py-2 text-xs font-semibold text-white transition-colors hover:bg-accent-blue/90"
+      >
+        Ouvrir le feed
+        <ArrowRight className="size-3.5" />
+      </Link>
     </div>
   );
 }

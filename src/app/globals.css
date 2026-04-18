@@ -22,9 +22,11 @@
   --font-body: "DM Sans", sans-serif;
 }
 
-* {
-  margin: 0;
-  padding: 0;
+/* Box-sizing handled by Tailwind Preflight — do NOT reset padding/margin here
+   because unlayered CSS overrides Tailwind v4's @layer utilities. */
+*,
+*::before,
+*::after {
   box-sizing: border-box;
 }
 

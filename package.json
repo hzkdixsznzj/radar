@@ -8,7 +8,8 @@
     "start": "next start",
     "lint": "eslint",
     "scrape:ted": "npx tsx src/lib/scrapers/ted-scraper.ts",
-    "scrape:be": "npx tsx src/lib/scrapers/be-scraper.ts"
+    "scrape:be": "npx tsx src/lib/scrapers/be-scraper.ts",
+    "seed": "npx tsx scripts/seed-from-ted.ts"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.87.0",
