@@ -163,9 +163,15 @@ function pickRegion(nutsCodes: string[]): string {
   return 'BE';
 }
 
-function mapNoticeToTender(
-  notice: TEDNotice,
-): Omit<Tender, 'id' | 'created_at' | 'updated_at'> {
+// The DB column `deadline` is nullable (migration 001 has no NOT NULL),
+// even though `Tender.deadline` narrows to `string` for the UI. Override
+// here so we can insert `null` instead of `""` (which postgres rejects
+// as an invalid timestamptz).
+type TenderInsert = Omit<Tender, 'id' | 'created_at' | 'updated_at' | 'deadline'> & {
+  deadline: string | null;
+};
+
+function mapNoticeToTender(notice: TEDNotice): TenderInsert {
   const externalId = notice['publication-number'] ?? `ted-${Date.now()}`;
   const title = pickLang(notice['notice-title']) || 'Untitled';
   const buyer = pickLang(notice['buyer-name']) || 'Unknown';
@@ -192,7 +198,7 @@ function mapNoticeToTender(
     nuts_codes: nutsCodes,
     region: pickRegion(nutsCodes),
     publication_date: publicationDate,
-    deadline: '',
+    deadline: null,
     estimated_value: null,
     currency: 'EUR',
     status: 'open',
@@ -233,9 +239,7 @@ async function fetchPage(
 // Upsert into Supabase
 // ---------------------------------------------------------------------------
 
-async function upsertTenders(
-  tenders: Omit<Tender, 'id' | 'created_at' | 'updated_at'>[],
-): Promise<number> {
+async function upsertTenders(tenders: TenderInsert[]): Promise<number> {
   if (tenders.length === 0) return 0;
 
   const supabase = getSupabase();
