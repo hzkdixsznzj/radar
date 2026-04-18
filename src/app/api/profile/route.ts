@@ -7,17 +7,19 @@ export async function GET() {
   if (!user) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
 
   try {
-    const { data: profile, error } = await supabase
-      .from('profiles')
-      .select('*')
-      .eq('user_id', user.id)
-      .single();
+    // Fetch profile + subscription in parallel — both are keyed on user_id
+    // and we ship them together so client pages (feed header, profile page,
+    // pricing CTA, etc.) can avoid a second round trip.
+    const [{ data: profile, error }, { data: subscription }] = await Promise.all([
+      supabase.from('profiles').select('*').eq('user_id', user.id).single(),
+      supabase.from('subscriptions').select('*').eq('user_id', user.id).single(),
+    ]);
 
     if (error || !profile) {
       return NextResponse.json({ error: 'Profile not found' }, { status: 404 });
     }
 
-    return NextResponse.json({ profile });
+    return NextResponse.json({ profile, subscription: subscription ?? null });
   } catch (err) {
     console.error('Error fetching profile:', err);
     return NextResponse.json({ error: 'Internal server error' }, { status: 500 });

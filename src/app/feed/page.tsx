@@ -3,6 +3,7 @@
 import { useState, useCallback, useEffect } from 'react';
 import { AlertTriangle, Radar as RadarIcon, RotateCw, SlidersHorizontal } from 'lucide-react';
 import Link from 'next/link';
+import { useRouter } from 'next/navigation';
 import { CardStack } from '@/components/feed/card-stack';
 import {
   FeedFilters,
@@ -30,14 +31,33 @@ type TendersApiResponse = {
 };
 
 export default function FeedPage() {
+  const router = useRouter();
   const [tenders, setTenders] = useState<TenderWithScore[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [filters, setFilters] = useState<FeedFiltersState>(DEFAULT_FILTERS);
   const [viewCount, setViewCount] = useState(0);
   const [page, setPage] = useState(0);
-  // TODO: fetch actual plan from user subscription
-  const [plan] = useState<'free' | 'pro' | 'business'>('free');
+  const [refreshing, setRefreshing] = useState(false);
+  const [plan, setPlan] = useState<'free' | 'pro' | 'business'>('free');
+
+  // Fetch the user's current subscription plan (drives the free-tier counter).
+  useEffect(() => {
+    let cancelled = false;
+    fetch('/api/profile')
+      .then((r) => (r.ok ? r.json() : null))
+      .then((data) => {
+        if (cancelled || !data) return;
+        const p = data?.subscription?.plan as 'free' | 'pro' | 'business' | undefined;
+        if (p) setPlan(p);
+      })
+      .catch(() => {
+        /* silently ignore — default is free */
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
 
   const remainingViews = Math.max(0, FREE_TIER_LIMIT - viewCount);
 
@@ -97,6 +117,13 @@ export default function FeedPage() {
     fetchTenders(nextPage, filters);
   }
 
+  async function handleRefresh() {
+    setRefreshing(true);
+    setPage(0);
+    await fetchTenders(0, filters);
+    setRefreshing(false);
+  }
+
   async function handleSave(tender: TenderWithScore) {
     setViewCount((c) => c + 1);
     try {
@@ -124,8 +151,7 @@ export default function FeedPage() {
   }
 
   function handleAnalyze(tender: TenderWithScore) {
-    // TODO: navigate to analysis page or open analysis modal
-    console.log('Analyze tender:', tender.id);
+    router.push(`/analyse/${tender.id}`);
   }
 
   function handleFiltersChange(newFilters: FeedFiltersState) {
@@ -140,11 +166,23 @@ export default function FeedPage() {
           <h1 className="text-lg font-bold font-[family-name:var(--font-display)]">
             Radar
           </h1>
-          {plan === 'free' && (
-            <span className="rounded-full bg-bg-card px-3 py-1 text-xs font-medium text-text-secondary">
-              {remainingViews}/{FREE_TIER_LIMIT} marchés restants ce mois
-            </span>
-          )}
+          <div className="flex items-center gap-2">
+            {plan === 'free' && (
+              <span className="rounded-full bg-bg-card px-3 py-1 text-xs font-medium text-text-secondary">
+                {remainingViews}/{FREE_TIER_LIMIT} ce mois
+              </span>
+            )}
+            <button
+              onClick={handleRefresh}
+              disabled={refreshing || loading}
+              aria-label="Rafraîchir le feed"
+              className="flex size-9 items-center justify-center rounded-full bg-bg-card text-text-secondary transition-colors hover:bg-bg-card-hover hover:text-text-primary disabled:opacity-50"
+            >
+              <RotateCw
+                className={`size-4 ${refreshing ? 'animate-spin' : ''}`}
+              />
+            </button>
+          </div>
         </div>
 
         {/* Filters */}

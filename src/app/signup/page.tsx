@@ -167,11 +167,11 @@ export default function SignupPage() {
               />
               <span className="text-xs leading-relaxed text-text-secondary">
                 J&apos;accepte les{' '}
-                <Link href="/terms" className="text-accent-blue hover:underline">
+                <Link href="/cgu" className="text-accent-blue hover:underline">
                   conditions d&apos;utilisation
                 </Link>{' '}
                 et la{' '}
-                <Link href="/privacy" className="text-accent-blue hover:underline">
+                <Link href="/confidentialite" className="text-accent-blue hover:underline">
                   politique de confidentialité
                 </Link>
               </span>

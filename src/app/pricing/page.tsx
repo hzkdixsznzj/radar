@@ -160,16 +160,19 @@ export default function PricingPage() {
               <Link href="/pricing" className="transition-colors hover:text-text-primary">
                 Tarifs
               </Link>
-              <Link href="/contact" className="transition-colors hover:text-text-primary">
+              <a
+                href="mailto:contact@radar.be"
+                className="transition-colors hover:text-text-primary"
+              >
                 Contact
-              </Link>
-              <Link href="/legal" className="transition-colors hover:text-text-primary">
+              </a>
+              <Link href="/mentions-legales" className="transition-colors hover:text-text-primary">
                 Mentions l&eacute;gales
               </Link>
-              <Link href="/privacy" className="transition-colors hover:text-text-primary">
+              <Link href="/confidentialite" className="transition-colors hover:text-text-primary">
                 Confidentialit&eacute;
               </Link>
-              <Link href="/terms" className="transition-colors hover:text-text-primary">
+              <Link href="/cgu" className="transition-colors hover:text-text-primary">
                 CGU
               </Link>
             </nav>

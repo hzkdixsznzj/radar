@@ -52,10 +52,12 @@ export function ChatBubble() {
   const inputRef = useRef<HTMLInputElement>(null);
   const pathname = usePathname();
 
-  // Extract tender_id from URL if on analysis page
-  const tenderId = pathname.startsWith('/tender/')
-    ? pathname.split('/tender/')[1]?.split('/')[0] ?? null
-    : null;
+  // Extract tender_id from URL when on an analysis or redaction page so the
+  // assistant automatically gets the tender context. Routes look like:
+  //   /analyse/<tender-id>
+  //   /redaction/<tender-id>
+  const tenderIdMatch = pathname.match(/^\/(?:analyse|redaction)\/([^/?#]+)/);
+  const tenderId = tenderIdMatch ? tenderIdMatch[1] : null;
 
   // Auto-scroll to bottom on new messages
   useEffect(() => {
@@ -95,10 +97,15 @@ export function ChatBubble() {
 
         if (!res.ok) throw new Error('Chat request failed');
 
-        const data = (await res.json()) as { reply: string };
+        // The server sends `{ response: string }` (see /api/chat/route.ts).
+        const data = (await res.json()) as { response?: string };
         setMessages((prev) => [
           ...prev,
-          { id: uid(), role: 'assistant', content: data.reply },
+          {
+            id: uid(),
+            role: 'assistant',
+            content: data.response ?? '(réponse vide)',
+          },
         ]);
       } catch {
         setMessages((prev) => [
