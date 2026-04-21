@@ -112,6 +112,19 @@ function extractDocumentLinks(
  * page to fetch, scrape the document links, and return them. Empty array
  * if we couldn't resolve any — callers should treat that as a normal
  * "no attachments" state rather than an error.
+ *
+ * Reality check on what we can / cannot scrape today:
+ *   - BDA (publicprocurement.be) switched to a Vue SPA — the landing HTML
+ *     contains only `<div id="app"></div>`. Actual publication details
+ *     load via REST endpoints under /api/sea that require auth.
+ *   - TED v2 portal is a React widget under a Liferay shell — same story,
+ *     the document anchors are injected by JS after initial render.
+ *
+ * For both cases, a server-side fetch gives us an empty shell. Until we
+ * wire up either (a) a headless Chrome renderer or (b) authenticated API
+ * access, we fall back to a single "Open the publication page" pseudo-
+ * document. That's still useful in the UI — the user gets one click to
+ * the official source instead of a dead "no documents" state.
  */
 export async function resolveTenderDocuments(
   tender: Pick<Tender, 'source' | 'documents_url' | 'external_id'>,
@@ -120,13 +133,32 @@ export async function resolveTenderDocuments(
   if (!pageUrl) return [];
 
   const html = await fetchHtml(pageUrl);
-  if (!html) return [];
 
-  // BDA and TED have slightly different anchor conventions but both end
-  // up with the same `<a href=...>label</a>` pattern. Feed the whole page
-  // through the same extractor and rely on DOC_EXT to filter noise.
-  const docs = extractDocumentLinks(html, pageUrl);
+  // Detect SPA-only shells early. Both BDA (Vue) and TED v2 (React widget)
+  // ship an otherwise empty landing page; running the anchor regex on
+  // those is a waste.
+  const isSpaShell =
+    !html ||
+    html.length < 4000 ||
+    /<div[^>]+id=["']app["']/.test(html) ||
+    /ted-v2-react-widget/i.test(html);
 
-  // Cap to prevent a runaway page from blowing up the JSON column.
-  return docs.slice(0, 30);
+  if (!isSpaShell && html) {
+    const docs = extractDocumentLinks(html, pageUrl);
+    if (docs.length > 0) return docs.slice(0, 30);
+  }
+
+  // Fallback — link the user straight to the source publication. Labelled
+  // and typed as "link" so the UI can render it with an external-link
+  // icon instead of a download icon.
+  return [
+    {
+      label:
+        tender.source === 'ted'
+          ? "Voir l'annonce sur TED"
+          : 'Voir la publication sur BDA',
+      url: pageUrl,
+      type: 'link',
+    },
+  ];
 }

@@ -344,25 +344,32 @@ export default function TenderDetailPage({
               </div>
             ) : (
               <ul className="space-y-2">
-                {(documents ?? []).map((doc) => (
-                  <li key={doc.url}>
-                    <a
-                      href={doc.url}
-                      target="_blank"
-                      rel="noopener noreferrer"
-                      className="flex items-center justify-between gap-3 rounded-lg border border-border bg-bg-input px-3 py-2.5 text-sm text-text-secondary transition-colors hover:border-accent-blue hover:text-accent-blue"
-                    >
-                      <span className="flex min-w-0 items-center gap-2">
-                        <FileText className="size-4 shrink-0" />
-                        <span className="truncate">{doc.label}</span>
-                      </span>
-                      <span className="flex shrink-0 items-center gap-1.5 text-xs text-text-muted">
-                        <span className="uppercase">{doc.type}</span>
-                        <Download className="size-3.5" />
-                      </span>
-                    </a>
-                  </li>
-                ))}
+                {(documents ?? []).map((doc) => {
+                  const isLink = doc.type === 'link';
+                  return (
+                    <li key={doc.url}>
+                      <a
+                        href={doc.url}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        className="flex items-center justify-between gap-3 rounded-lg border border-border bg-bg-input px-3 py-2.5 text-sm text-text-secondary transition-colors hover:border-accent-blue hover:text-accent-blue"
+                      >
+                        <span className="flex min-w-0 items-center gap-2">
+                          <FileText className="size-4 shrink-0" />
+                          <span className="truncate">{doc.label}</span>
+                        </span>
+                        <span className="flex shrink-0 items-center gap-1.5 text-xs text-text-muted">
+                          {!isLink && <span className="uppercase">{doc.type}</span>}
+                          {isLink ? (
+                            <ExternalLink className="size-3.5" />
+                          ) : (
+                            <Download className="size-3.5" />
+                          )}
+                        </span>
+                      </a>
+                    </li>
+                  );
+                })}
               </ul>
             )}
           </Card>

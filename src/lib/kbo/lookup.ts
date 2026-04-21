@@ -111,17 +111,32 @@ export async function lookupKbo(rawVat: string): Promise<KboResult> {
       'Adres',
     ]);
 
-    // Activities block — each activity line tends to look like
-    // "NACEBEL 2008 41.201 - Construction générale de bâtiments résidentiels"
-    // Grab every 3–6-digit NACE code and its trailing label.
+    // Activities block — on KBO, when present, activities appear in rows
+    // under a `<h2>Activités TVA</h2>` or `<h2>Activités ONSS</h2>` section.
+    // The line format in practice is one of:
+    //   "NACEBEL 2008 41.201 - Construction générale de bâtiments résidentiels"
+    //   "Nacebel 2008: 41201 - Construction ..."
+    //   "41.201 - Construction..."  (label alone, no "NACEBEL" prefix)
+    //
+    // We look for <code> - <label> pairs where code is 5-digit NACEBEL or
+    // dotted 2-3.1-3. Plenty of KBO entries (big corps, financials) simply
+    // don't publish activities on the public page — we tolerate an empty
+    // list there and surface that as "no suggestion" to the user.
     const activities: string[] = [];
     const naceCodes: string[] = [];
     const naceRegex =
-      /NACEBEL[^0-9A-Z]*(\d{2,3}(?:\.\d{1,3})?)[^A-Za-z<]*([^<\n]{3,160})/g;
+      /(?:NACEBEL[^0-9]*)?(\d{2,3}(?:\.\d{1,3})?|\d{4,5})\s*[-–]\s*([^<\n]{3,160})/gi;
     let m: RegExpExecArray | null;
     while ((m = naceRegex.exec(html)) !== null) {
-      const code = m[1].trim();
+      let code = m[1].trim();
+      // Normalise 5-digit form (41201) to dotted form (41.201) so the
+      // prefix-matching in suggestSectorsFromNace() works uniformly.
+      if (/^\d{5}$/.test(code)) code = `${code.slice(0, 2)}.${code.slice(2)}`;
       const label = decodeEntities(m[2].trim()).replace(/\s+/g, ' ');
+      // Drop clearly-not-NACE numbers (dates, phone fragments). NACE top-
+      // level sections are 01-99; 100+ is noise.
+      const section = parseInt(code.split('.')[0], 10);
+      if (isNaN(section) || section < 1 || section > 99) continue;
       if (!naceCodes.includes(code)) naceCodes.push(code);
       if (label && !activities.includes(label)) activities.push(label);
     }
@@ -143,15 +158,22 @@ export async function lookupKbo(rawVat: string): Promise<KboResult> {
 // ---- HTML helpers ----------------------------------------------------------
 
 /**
- * KBO's HTML is table-row-ish: `<td>Label</td><td>Value ...</td>`. Rather
- * than bringing in a full HTML parser, we match on each known French/Dutch
- * label and grab the text up to the next tag.
+ * KBO's HTML is table-row-ish. The canonical shape is:
+ *   <td class="QL">Dénomination:</td><td class="QL" colspan="3">BELFIUS BANQUE<br/>...
+ * and we want "BELFIUS BANQUE". The trap is that the label text ("Dénomination")
+ * also re-appears later inside `<span class="upd">Dénomination en français, depuis
+ * le ...</span>`, so a naive "find label, take next text" regex happily matches
+ * that span instead of the real value cell.
+ *
+ * The reliable fix: anchor on the full `<td>Label:</td><td...>` boundary so we
+ * only ever match the value cell, never the descriptive span.
  */
 function extractAfterLabel(html: string, labels: string[]): string {
   for (const label of labels) {
     const esc = label.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    // <td ...>Label[:]?</td>  <td ...> VALUE (up to next < or <br>)
     const re = new RegExp(
-      `${esc}\\s*(?:<[^>]+>\\s*)*([^<]{2,200})`,
+      `<td[^>]*>\\s*${esc}\\s*:?\\s*</td>\\s*<td[^>]*>\\s*([^<]{2,200})`,
       'i',
     );
     const m = html.match(re);
