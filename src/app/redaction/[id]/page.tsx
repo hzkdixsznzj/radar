@@ -131,6 +131,115 @@ export default function RedactionPage({
   const [generating, setGenerating] = useState<SectionKey | null>(null);
   const [showPaywall, setShowPaywall] = useState(false);
   const [genError, setGenError] = useState<string | null>(null);
+  const [exportingPdf, setExportingPdf] = useState(false);
+
+  // ----------------------------------------------------- PDF export
+  // Generate a real downloadable PDF instead of opening the print dialog.
+  // Uses jsPDF + html2canvas, lazy-imported so the rest of the app
+  // doesn't pay the bundle cost. Builds a temp container off-screen, renders
+  // the title + each section's HTML, then converts to a multi-page A4 PDF.
+  const handleExportPdf = useCallback(async () => {
+    if (!data || !sections || exportingPdf) return;
+    setExportingPdf(true);
+    try {
+      const [{ default: jsPDF }, { default: html2canvas }] = await Promise.all([
+        import('jspdf'),
+        import('html2canvas'),
+      ]);
+
+      // Build a clean A4-friendly document off-screen. Light theme, plain
+      // typography — the dark UI styles never enter the PDF.
+      const root = document.createElement('div');
+      root.style.cssText = [
+        'position: fixed',
+        'top: -10000px',
+        'left: 0',
+        'width: 794px', // A4 @ 96dpi ≈ 794 × 1123
+        'background: white',
+        'color: #111',
+        'font-family: -apple-system, system-ui, sans-serif',
+        'font-size: 12pt',
+        'line-height: 1.5',
+        'padding: 40px 48px',
+      ].join(';');
+      const orderedSections = SECTION_TEMPLATES.map((tpl) => sections[tpl.id]);
+      root.innerHTML = `
+        <h1 style="font-size:20pt;margin:0 0 4px;font-weight:700;">
+          Mémoire technique
+        </h1>
+        <p style="margin:0 0 4px;color:#444;font-size:11pt;">
+          ${escapeHtml(data.tender.title ?? '')}
+        </p>
+        <p style="margin:0 0 24px;color:#666;font-size:10pt;">
+          ${escapeHtml(data.tender.contracting_authority ?? '')}
+        </p>
+        ${orderedSections
+          .map(
+            (s) => `
+          <section style="margin-bottom:20px;page-break-inside:avoid;">
+            <h2 style="font-size:13pt;margin:0 0 6px;font-weight:600;">
+              ${escapeHtml(s.title)}
+            </h2>
+            <div style="font-size:11pt;">${s.content || '<p style="color:#999">—</p>'}</div>
+          </section>`,
+          )
+          .join('')}
+      `;
+      document.body.appendChild(root);
+
+      try {
+        const pdf = new jsPDF({ unit: 'pt', format: 'a4' });
+        const canvas = await html2canvas(root, {
+          scale: 2,
+          backgroundColor: '#ffffff',
+          useCORS: true,
+        });
+        const imgData = canvas.toDataURL('image/jpeg', 0.92);
+
+        // jsPDF A4 in pt = 595 × 842. We slice the long canvas into pages.
+        const pageW = pdf.internal.pageSize.getWidth();
+        const pageH = pdf.internal.pageSize.getHeight();
+        const imgW = pageW;
+        const imgH = (canvas.height * pageW) / canvas.width;
+
+        let position = 0;
+        let remaining = imgH;
+        let pageIdx = 0;
+        while (remaining > 0) {
+          if (pageIdx > 0) pdf.addPage();
+          pdf.addImage(imgData, 'JPEG', 0, position, imgW, imgH);
+          remaining -= pageH;
+          position -= pageH;
+          pageIdx++;
+        }
+
+        const safeTitle = (data.tender.title ?? 'memoire')
+          .replace(/[^a-zA-Z0-9-_ ]/g, '')
+          .trim()
+          .slice(0, 60);
+        pdf.save(`Mémoire — ${safeTitle || 'soumission'}.pdf`);
+      } finally {
+        document.body.removeChild(root);
+      }
+    } catch (err) {
+      console.error('PDF export failed:', err);
+      // Fallback to native print dialog so the user has *some* path forward.
+      window.print();
+    } finally {
+      setExportingPdf(false);
+    }
+  }, [data, sections, exportingPdf]);
+
+  // Tiny HTML-entity escape for the static parts of the PDF doc (titles,
+  // labels). Section bodies are already AI-generated HTML — they go in via
+  // innerHTML untouched.
+  function escapeHtml(s: string): string {
+    return s
+      .replace(/&/g, '&amp;')
+      .replace(/</g, '&lt;')
+      .replace(/>/g, '&gt;')
+      .replace(/"/g, '&quot;');
+  }
 
   // ------------------------------------------------------------------ load
   useEffect(() => {
@@ -538,7 +647,8 @@ export default function RedactionPage({
             <Button
               variant="secondary"
               size="md"
-              onClick={() => window.print()}
+              loading={exportingPdf}
+              onClick={handleExportPdf}
               icon={<Download className="size-4" />}
             >
               <span className="hidden sm:inline">Exporter en PDF</span>
