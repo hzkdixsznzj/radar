@@ -1,9 +1,10 @@
 'use client';
 
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { useRouter } from 'next/navigation';
 import clsx from 'clsx';
 import { PricingCard } from '@/components/pricing/pricing-card';
+import { createClient } from '@/lib/supabase/client';
 
 /* -------------------------------------------------------------------------- */
 /*  Plan data (duplicated from page for client usage)                         */
@@ -66,7 +67,62 @@ const ANNUAL_DISCOUNT = 0.8; // 20% off
 
 export function PricingToggle() {
   const [annual, setAnnual] = useState(false);
+  const [loadingPlan, setLoadingPlan] = useState<string | null>(null);
+  const [isAuthed, setIsAuthed] = useState<boolean | null>(null);
   const router = useRouter();
+
+  // Detect auth state once on mount so the CTA can branch sensibly:
+  //  - logged-out → router.push(/signup?plan=pro) (existing behaviour)
+  //  - logged-in  → POST /api/stripe/checkout and redirect to Stripe.
+  // Without this, the previous behaviour was to always push /signup, which
+  // the auth middleware bounced back to /feed for logged-in users — looking
+  // exactly like a broken button.
+  useEffect(() => {
+    let cancelled = false;
+    const supabase = createClient();
+    supabase.auth.getUser().then(({ data }) => {
+      if (!cancelled) setIsAuthed(!!data.user);
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  async function handleSelect(plan: { id: string; href: string }) {
+    // Free plan or Business "Contacter les ventes" → just route.
+    if (plan.id === 'free' || plan.id === 'business') {
+      router.push(plan.href);
+      return;
+    }
+
+    // Pro: route signed-out users to signup, hand signed-in users straight
+    // to Stripe Checkout.
+    if (!isAuthed) {
+      router.push(plan.href);
+      return;
+    }
+
+    setLoadingPlan(plan.id);
+    try {
+      const res = await fetch('/api/stripe/checkout', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ plan: plan.id, billing: annual ? 'annual' : 'monthly' }),
+      });
+      const json = await res.json();
+      if (json?.url) {
+        window.location.href = json.url;
+      } else {
+        // Fallback: at least take them to /signup?plan=… so they don't
+        // think the button is dead.
+        router.push(plan.href);
+      }
+    } catch {
+      router.push(plan.href);
+    } finally {
+      setLoadingPlan(null);
+    }
+  }
 
   return (
     <section className="pb-16 sm:pb-20">
@@ -131,10 +187,10 @@ export function PricingToggle() {
                 originalPrice={annual && plan.monthlyPrice > 0 ? plan.monthlyPrice : null}
                 period={plan.monthlyPrice === 0 ? '' : '/mois'}
                 features={[...plan.features]}
-                cta={plan.cta}
+                cta={loadingPlan === plan.id ? 'Redirection…' : plan.cta}
                 popular={plan.popular}
                 tag={plan.tag}
-                onSelect={() => router.push(plan.href)}
+                onSelect={() => handleSelect(plan)}
               />
             );
           })}

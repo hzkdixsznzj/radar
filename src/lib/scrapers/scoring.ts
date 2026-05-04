@@ -3,18 +3,24 @@ import type { Tender, Profile } from '@/types/database';
 // ---------------------------------------------------------------------------
 // Score weights (must total 100)
 // ---------------------------------------------------------------------------
+//
+// 2026-05-04 rewrite: the previous version used `hits / profile.list.length`
+// ratios. With the post-onboarding vocab, profile.keywords routinely contains
+// 20–30 FR/NL/EN variants of the same concept ("chauffage", "verwarming",
+// "heating", …). A real HVAC tender that says "chauffage" exactly once
+// scored 1/25 = 0.04 → 0.6 / 15 pts. Stacking that across all dimensions
+// produced a hard ceiling around 35–40 / 100 even for textbook matches and
+// made the feed look broken (only one card at score 38, everything else at
+// 8). We now use a boolean-OR + boost model: a single hit on a strong
+// signal (sector keyword, CPV prefix) earns most of the slot's points,
+// extra hits add a small bonus.
+// ---------------------------------------------------------------------------
 
-const WEIGHT_SECTOR = 30;
-const WEIGHT_REGION = 20;
-const WEIGHT_CPV = 20;
-const WEIGHT_BUDGET = 15;
-const WEIGHT_KEYWORD = 15;
-
-// When a tender has no sector match AND no CPV match, we consider the
-// keyword-only signal unreliable (e.g. BatiWal-construction scoring 43 on
-// a cleaning tender because its keyword "école" happened to match). Cap
-// the keyword contribution at this fraction of its weight in that case.
-const KEYWORD_CAP_WITHOUT_SECTOR_OR_CPV = 0.5;
+const WEIGHT_SECTOR = 35; // strongest signal — text match on sector vocab keywords
+const WEIGHT_CPV = 25; // structured CPV-prefix match
+const WEIGHT_REGION = 15;
+const WEIGHT_KEYWORD = 15; // user-added custom keywords (on top of sector vocab)
+const WEIGHT_BUDGET = 10;
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -37,8 +43,33 @@ function containsAny(haystack: string, needles: string[]): number {
 }
 
 /**
- * Compare two sets of NUTS codes. Returns 1.0 for exact match,
- * partial credit for prefix overlap (e.g. BE2 matches BE21).
+ * Boost-style scoring: at least one hit earns most of the slot's points,
+ * extra hits add a smaller bonus, capped at the full weight. Tuned so a
+ * tender that mentions a sector keyword once already feels "matched" to
+ * the user, while one with three independent hits still ranks higher.
+ *
+ * @param hits  number of unique vocab entries found in the tender text
+ * @param weight total weight of this slot
+ */
+function boostScore(hits: number, weight: number): number {
+  if (hits <= 0) return 0;
+  // 1 hit  → 70%   (strong signal — most of the slot)
+  // 2 hits → 88%
+  // 3 hits → 96%
+  // 4+ hits → 100%
+  const base = 0.7;
+  const bonus = Math.min(hits - 1, 3) * 0.1;
+  return Math.min(base + bonus, 1.0) * weight;
+}
+
+/**
+ * Compare two sets of NUTS codes.
+ *  - Exact match (BE328 == BE328) → 1.0
+ *  - Province-level match (BE32 vs BE328 or vice-versa) → 0.85
+ *  - Country-level match (BE vs BE211) → 0.4 — still some signal: a
+ *    Hainaut-only profile shouldn't be punished into oblivion for a
+ *    tender published with no specific NUTS.
+ *  - No overlap → 0
  */
 function nutsOverlap(tenderCodes: string[], profileRegions: string[]): number {
   if (tenderCodes.length === 0 || profileRegions.length === 0) return 0;
@@ -49,14 +80,28 @@ function nutsOverlap(tenderCodes: string[], profileRegions: string[]): number {
     const tcNorm = tc.toUpperCase();
     for (const pr of profileRegions) {
       const prNorm = pr.toUpperCase();
+
       if (tcNorm === prNorm) {
         bestScore = Math.max(bestScore, 1.0);
-      } else if (tcNorm.startsWith(prNorm) || prNorm.startsWith(tcNorm)) {
-        // Partial: the shorter is a prefix of the longer
-        const overlap = Math.min(tcNorm.length, prNorm.length);
-        const longer = Math.max(tcNorm.length, prNorm.length);
-        bestScore = Math.max(bestScore, overlap / longer);
+        continue;
       }
+
+      // Compute longest shared prefix. BE32 vs BE323 → 4 ("BE32"); BE32 vs
+      // BE211 → 2 ("BE"). We score on the SHARED prefix length, not on
+      // whether one is a strict prefix of the other — otherwise BE32 vs
+      // BE211 (different provinces but both Belgian) would get 0.
+      let shared = 0;
+      const maxLen = Math.min(tcNorm.length, prNorm.length);
+      while (shared < maxLen && tcNorm[shared] === prNorm[shared]) shared++;
+
+      if (shared <= 1) continue;
+
+      let s = 0;
+      if (shared === 2) s = 0.4;       // country-level (BE)
+      else if (shared === 3) s = 0.7;  // 1-digit Belgian region
+      else if (shared === 4) s = 0.85; // province
+      else s = 0.95;                   // arrondissement+
+      bestScore = Math.max(bestScore, s);
     }
   }
 
@@ -64,38 +109,50 @@ function nutsOverlap(tenderCodes: string[], profileRegions: string[]): number {
 }
 
 /**
- * Compare CPV codes. Returns a 0-1 ratio based on matching depth.
- * CPV codes are 8-digit (e.g. 45000000). More shared leading digits = higher match.
+ * Compare CPV codes between tender and profile.
+ *
+ * Profile.sectors stores a mix of human labels ("HVAC — Chauffage…") and
+ * digit-only CPV prefixes ("45331", "42500", …) injected by
+ * `expandSelection()` from the sector vocab. We only care about the digit
+ * tokens; the labels are discarded here (text matching uses
+ * profile.keywords instead).
+ *
+ * CPV is hierarchical: 45331100 ⊂ 4533 ⊂ 45 (Construction). The deeper
+ * the shared prefix, the tighter the match. A 5-char shared prefix means
+ * we're in the same sub-domain (e.g. 45331xx = "Heating, ventilation and
+ * air-conditioning installation work"), which is a near-perfect signal,
+ * so we promote it to 1.0 instead of the 5/8 = 0.625 it used to get.
  */
 function cpvOverlap(tenderCpv: string[], profileSectors: string[]): number {
   if (tenderCpv.length === 0 || profileSectors.length === 0) return 0;
 
-  // Extract any CPV-like patterns from profile sectors (digits, 8+ chars)
   const profileCpvPatterns: string[] = [];
   for (const s of profileSectors) {
-    const matches = s.match(/\d{2,8}/g);
-    if (matches) profileCpvPatterns.push(...matches);
+    // Only treat purely numeric tokens as CPV. Labels with embedded
+    // numbers ("Plan 2025 IT") would otherwise leak in as false patterns.
+    if (/^\d{2,8}$/.test(s.trim())) profileCpvPatterns.push(s.trim());
   }
-
   if (profileCpvPatterns.length === 0) return 0;
 
   let bestScore = 0;
-
   for (const tc of tenderCpv) {
     const tcDigits = tc.replace(/\D/g, '');
     for (const pp of profileCpvPatterns) {
-      // Find length of shared prefix
       let shared = 0;
       for (let i = 0; i < Math.min(tcDigits.length, pp.length); i++) {
         if (tcDigits[i] === pp[i]) shared++;
         else break;
       }
-      if (shared >= 2) {
-        bestScore = Math.max(bestScore, shared / 8); // 8 = full CPV length
-      }
+      // Calibrated: anything 5+ shared digits is a near-perfect match
+      // (sub-sub-category in CPV). 4 = sub-cat, 3 = category, 2 = division.
+      let s = 0;
+      if (shared >= 5) s = 1.0;
+      else if (shared === 4) s = 0.85;
+      else if (shared === 3) s = 0.6;
+      else if (shared === 2) s = 0.3;
+      bestScore = Math.max(bestScore, s);
     }
   }
-
   return bestScore;
 }
 
@@ -187,58 +244,71 @@ export interface ScoreBreakdown {
 
 /** Shared computation used by both scoreTender() and scoreTenderBreakdown(). */
 function computeBreakdown(tender: Tender, profile: Profile): ScoreBreakdown {
-  const searchableText = `${tender.title} ${tender.description} ${tender.full_text}`;
+  const searchableText = `${tender.title ?? ''} ${tender.description ?? ''} ${
+    tender.full_text ?? ''
+  }`;
 
-  // --- Sector match (30 pts) ---
-  const sectorHits = containsAny(searchableText, profile.sectors);
-  const sectorRatio =
-    profile.sectors.length > 0
-      ? Math.min(sectorHits / profile.sectors.length, 1.0)
-      : 0;
-  const sectorScore = sectorRatio * WEIGHT_SECTOR;
+  // ---------------------------------------------------------------------
+  // Sector match (35 pts) — text scan against the FR/NL/EN keyword bank
+  // injected by the sector vocab during onboarding (`expandSelection`).
+  // We deliberately scan profile.keywords here, NOT profile.sectors:
+  //   - profile.sectors holds human labels ("HVAC — Chauffage…") and
+  //     CPV digit tokens; labels never appear verbatim in tenders, so
+  //     text-matching them is dead weight.
+  //   - profile.keywords holds the actual searchable vocab ("chauffage",
+  //     "verwarming", "HVAC", …) — that's what fires on real tender
+  //     titles like "Remplacement du réseau de chauffage".
+  // ---------------------------------------------------------------------
+  const sectorHits = containsAny(searchableText, profile.keywords ?? []);
+  const sectorScore = boostScore(sectorHits, WEIGHT_SECTOR);
 
-  // --- Region match (20 pts) ---
-  // Check NUTS codes first, fall back to region text matching
-  let regionScore = 0;
-  const nutsMatch = nutsOverlap(tender.nuts_codes, profile.regions);
-  if (nutsMatch > 0) {
-    regionScore = nutsMatch * WEIGHT_REGION;
-  } else {
-    // Fall back to text-based region matching
-    const regionText = `${tender.region} ${tender.nuts_codes.join(' ')}`;
-    const regionHits = containsAny(regionText, profile.regions);
-    const regionRatio =
-      profile.regions.length > 0
-        ? Math.min(regionHits / profile.regions.length, 1.0)
-        : 0;
-    regionScore = regionRatio * WEIGHT_REGION;
-  }
-
-  // --- CPV code relevance (20 pts) ---
-  const cpvMatch = cpvOverlap(tender.cpv_codes, profile.sectors);
+  // ---------------------------------------------------------------------
+  // CPV match (25 pts) — structured prefix overlap.
+  // ---------------------------------------------------------------------
+  const cpvMatch = cpvOverlap(tender.cpv_codes ?? [], profile.sectors ?? []);
   const cpvScore = cpvMatch * WEIGHT_CPV;
 
-  // --- Budget match (15 pts) ---
-  const budgetMatch = budgetFit(tender.estimated_value, profile.budget_ranges);
-  const budgetScore = budgetMatch * WEIGHT_BUDGET;
-
-  // --- Keyword match (15 pts) ---
-  const keywordHits = containsAny(searchableText, profile.keywords);
-  const keywordRatio =
-    profile.keywords.length > 0
-      ? Math.min(keywordHits / profile.keywords.length, 1.0)
-      : 0;
-  let keywordScore = keywordRatio * WEIGHT_KEYWORD;
-
-  // --- Keyword leak guard ---
-  // If neither the sector nor the CPV matched, a keyword-only hit is
-  // unreliable (e.g. construction company scoring high on a cleaning
-  // tender because of a stray "école" match). Cap the keyword contribution
-  // to prevent false-positive ranking.
-  if (sectorScore === 0 && cpvScore === 0) {
-    const cap = WEIGHT_KEYWORD * KEYWORD_CAP_WITHOUT_SECTOR_OR_CPV;
-    if (keywordScore > cap) keywordScore = cap;
+  // ---------------------------------------------------------------------
+  // Region match (15 pts).
+  // No regions in the profile = treat as "national" — no penalty.
+  // ---------------------------------------------------------------------
+  let regionScore = 0;
+  const profileRegions = profile.regions ?? [];
+  if (profileRegions.length === 0) {
+    regionScore = WEIGHT_REGION;
+  } else {
+    const nutsMatch = nutsOverlap(tender.nuts_codes ?? [], profileRegions);
+    if (nutsMatch > 0) {
+      regionScore = nutsMatch * WEIGHT_REGION;
+    } else {
+      // Fall back to text-based region matching for legacy rows that only
+      // store a region label without populated nuts_codes.
+      const regionText = `${tender.region ?? ''} ${(tender.nuts_codes ?? []).join(' ')}`;
+      const regionHits = containsAny(regionText, profileRegions);
+      regionScore = regionHits > 0 ? WEIGHT_REGION : 0;
+    }
   }
+
+  // ---------------------------------------------------------------------
+  // Custom keyword match (15 pts) — user-typed keywords on top of the
+  // vocab. Already covered by sectorScore for vocab keywords; this slot
+  // rewards extra signal from custom additions.
+  // ---------------------------------------------------------------------
+  // We use the same profile.keywords list — the boost above already covers
+  // the multi-hit bonus, so here we treat extra hits as a confidence
+  // modifier rather than counting twice. If the user added words like
+  // "client école" in a school-supplier profile, they fire here too.
+  const keywordHits = containsAny(searchableText, profile.keywords ?? []);
+  const keywordScore = boostScore(keywordHits, WEIGHT_KEYWORD);
+
+  // ---------------------------------------------------------------------
+  // Budget match (10 pts).
+  // ---------------------------------------------------------------------
+  const budgetMatch = budgetFit(
+    tender.estimated_value,
+    profile.budget_ranges ?? [],
+  );
+  const budgetScore = budgetMatch * WEIGHT_BUDGET;
 
   const rawTotal =
     sectorScore + regionScore + cpvScore + budgetScore + keywordScore;

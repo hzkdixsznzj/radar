@@ -381,19 +381,23 @@ export default function TenderDetailPage({
         )}
 
         {/* Link to source. We have two options:
-         *  - For TED, the documents_url already points at the public notice page
-         *    on ted.europa.eu (when the SPA isn't masking it).
+         *  - For TED, the documents_url already points at the public notice
+         *    page on ted.europa.eu (works once JS loads).
          *  - For BDA, the saved URL points at the publicationWorkspace, which
-         *    is BDA's editor view and tends to require auth or render an empty
-         *    shell for outside users. A Google search on the reference number
-         *    almost always surfaces (a) the buyer's own announcement page with
-         *    the actual cahier des charges and (b) the BDA notice itself.
-         *    We prefer that to a dead-end SPA. */}
+         *    is BDA's editor view and renders an empty shell for outside
+         *    visitors. A Google search on the title + reference number
+         *    surfaces the buyer's own announcement page with the actual
+         *    cahier des charges. The previous attempt scoped the search to
+         *    `site:publicprocurement.be OR site:belgium.be` which was too
+         *    narrow — many buyers publish on their own .be domains, so we
+         *    drop the scope and let Google rank the most useful page.
+         */}
         {(() => {
           const isBda = tender.source !== 'ted';
-          const fallbackQuery = encodeURIComponent(
-            `${tender.external_id ?? tender.title} site:publicprocurement.be OR site:belgium.be`,
-          );
+          const queryParts: string[] = [];
+          if (tender.title) queryParts.push(`"${tender.title}"`);
+          if (tender.external_id) queryParts.push(tender.external_id);
+          const fallbackQuery = encodeURIComponent(queryParts.join(' '));
           const href = isBda
             ? `https://www.google.com/search?q=${fallbackQuery}`
             : tender.documents_url;
