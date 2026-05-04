@@ -134,11 +134,17 @@ export default function RedactionPage({
   const [exportingPdf, setExportingPdf] = useState(false);
 
   // ----------------------------------------------------- PDF export
-  // Real downloadable PDF instead of the OS print dialog. Built with
-  // jsPDF's native text API (NOT html2canvas) so the result is a true
-  // text-based PDF: selectable, copy-pasteable, small file size,
-  // proper typography. We hand-render the AI-generated HTML by walking
-  // the DOM and emitting jsPDF text commands per element.
+  // Real text-based PDF (selectable, multi-page, branded) generated
+  // via jsPDF's text API — no html2canvas. Layout is hand-tuned to
+  // look like a finished memoire technique:
+  //   - Full cover page with branded blue band, large title, buyer,
+  //     company name, date.
+  //   - Running header on body pages: thin coloured band + tender
+  //     title left + page X/Y right.
+  //   - Section heading = blue accent bar on the left + bold black
+  //     heading + thin separator underneath.
+  //   - Body 11pt, list items bulleted with the brand colour.
+  //   - Footer with "Généré avec Radar" attribution.
   const handleExportPdf = useCallback(async () => {
     if (!data || !sections || exportingPdf) return;
     setExportingPdf(true);
@@ -146,59 +152,150 @@ export default function RedactionPage({
       const { default: jsPDF } = await import('jspdf');
       const pdf = new jsPDF({ unit: 'pt', format: 'a4' });
 
-      // A4 = 595 × 842 pt. Margins keep ~3cm on top/bottom, ~2.5cm sides.
+      // ---- Geometry & theme ----
       const pageW = pdf.internal.pageSize.getWidth();
       const pageH = pdf.internal.pageSize.getHeight();
-      const M = { top: 64, bottom: 64, left: 56, right: 56 };
+      const M = { top: 96, bottom: 72, left: 56, right: 56 };
       const contentW = pageW - M.left - M.right;
-      let y = M.top;
 
-      // Track page count so we can paint the footer at the end.
+      // Brand palette (matches the Radar dark UI mapped to print).
+      const C = {
+        brand: [59, 130, 246] as [number, number, number],   // accent blue
+        brandSoft: [219, 234, 254] as [number, number, number], // light blue tint
+        text: [15, 23, 42] as [number, number, number],      // near-black
+        muted: [100, 116, 139] as [number, number, number],  // slate-500
+        line: [226, 232, 240] as [number, number, number],   // slate-200
+      };
+
       const tenderTitle = data.tender.title ?? 'Marché';
       const buyer = data.tender.contracting_authority ?? '';
+      const company = data.savedTender ? '' : ''; // placeholder; not on profile here
+      const dateStr = new Date().toLocaleDateString('fr-BE', {
+        day: 'numeric',
+        month: 'long',
+        year: 'numeric',
+      });
 
-      // Helpers ----------------------------------------------------------
-      const ensureSpace = (need: number) => {
+      let y = M.top;
+
+      // ---- Helpers ----
+      const setColor = (c: [number, number, number]) =>
+        pdf.setTextColor(c[0], c[1], c[2]);
+      const setFill = (c: [number, number, number]) =>
+        pdf.setFillColor(c[0], c[1], c[2]);
+      const setDraw = (c: [number, number, number]) =>
+        pdf.setDrawColor(c[0], c[1], c[2]);
+
+      const ensureSpace = (need: number, addPageFn?: () => void) => {
         if (y + need > pageH - M.bottom) {
           pdf.addPage();
+          if (addPageFn) addPageFn();
           y = M.top;
         }
       };
 
-      const drawText = (
-        text: string,
-        opts: {
-          size?: number;
-          style?: 'normal' | 'bold' | 'italic';
-          color?: [number, number, number];
-          x?: number;
-          maxW?: number;
-          lineHeight?: number;
-        } = {},
-      ) => {
-        const size = opts.size ?? 11;
-        const style = opts.style ?? 'normal';
-        const color = opts.color ?? [20, 20, 20];
-        const x = opts.x ?? M.left;
-        const maxW = opts.maxW ?? contentW;
-        const lh = opts.lineHeight ?? size * 1.45;
-
-        pdf.setFont('helvetica', style);
-        pdf.setFontSize(size);
-        pdf.setTextColor(color[0], color[1], color[2]);
-
-        const lines = pdf.splitTextToSize(text, maxW) as string[];
-        for (const line of lines) {
-          ensureSpace(lh);
-          pdf.text(line, x, y);
-          y += lh;
-        }
+      const paintRunningHeader = () => {
+        // Thin colored band at the very top.
+        setFill(C.brand);
+        pdf.rect(0, 0, pageW, 4, 'F');
+        // Header text under the band.
+        pdf.setFont('helvetica', 'normal');
+        pdf.setFontSize(8);
+        setColor(C.muted);
+        const ttClipped =
+          tenderTitle.length > 80 ? `${tenderTitle.slice(0, 78)}…` : tenderTitle;
+        pdf.text(ttClipped, M.left, 28);
       };
 
-      // HTML → blocks: turn AI output into a flat list of render
-      // instructions. Supports <p>, <ul>/<ol>+<li>, <strong>, <em>.
-      // Inline <strong>/<em> are flattened with weight markers so the
-      // text drawer can switch fonts mid-paragraph.
+      // ---- Cover page (no running header on this one) ----
+      // Big top band that fills the upper third.
+      setFill(C.brand);
+      pdf.rect(0, 0, pageW, 220, 'F');
+      // Soft tint band underneath for depth.
+      setFill(C.brandSoft);
+      pdf.rect(0, 220, pageW, 8, 'F');
+
+      // "Mémoire technique" eyebrow.
+      pdf.setFont('helvetica', 'bold');
+      pdf.setFontSize(10);
+      pdf.setTextColor(255, 255, 255);
+      pdf.text('MÉMOIRE TECHNIQUE', M.left, 90);
+
+      // Tender title — wrap if long.
+      pdf.setFont('helvetica', 'bold');
+      pdf.setFontSize(24);
+      pdf.setTextColor(255, 255, 255);
+      const titleLines = pdf.splitTextToSize(
+        tenderTitle,
+        contentW,
+      ) as string[];
+      let coverY = 124;
+      for (const line of titleLines.slice(0, 3)) {
+        pdf.text(line, M.left, coverY);
+        coverY += 28;
+      }
+
+      // Buyer line right under title.
+      if (buyer) {
+        pdf.setFont('helvetica', 'normal');
+        pdf.setFontSize(11);
+        pdf.setTextColor(219, 234, 254);
+        pdf.text(buyer, M.left, coverY + 4);
+      }
+
+      // Body of cover: a left brand bar with key meta.
+      const metaY = 320;
+      setFill(C.brand);
+      pdf.rect(M.left, metaY, 4, 120, 'F');
+
+      pdf.setFont('helvetica', 'bold');
+      pdf.setFontSize(9);
+      setColor(C.muted);
+      pdf.text('SOUMISSIONNAIRE', M.left + 18, metaY + 14);
+      pdf.setFont('helvetica', 'bold');
+      pdf.setFontSize(13);
+      setColor(C.text);
+      pdf.text(company || 'Soumissionnaire', M.left + 18, metaY + 32);
+
+      pdf.setFont('helvetica', 'bold');
+      pdf.setFontSize(9);
+      setColor(C.muted);
+      pdf.text('DATE', M.left + 18, metaY + 60);
+      pdf.setFont('helvetica', 'normal');
+      pdf.setFontSize(11);
+      setColor(C.text);
+      pdf.text(dateStr, M.left + 18, metaY + 78);
+
+      pdf.setFont('helvetica', 'bold');
+      pdf.setFontSize(9);
+      setColor(C.muted);
+      pdf.text('OBJET', M.left + 18, metaY + 102);
+      pdf.setFont('helvetica', 'normal');
+      pdf.setFontSize(11);
+      setColor(C.text);
+      const objLines = pdf.splitTextToSize(
+        tenderTitle,
+        contentW - 18,
+      ) as string[];
+      pdf.text(objLines.slice(0, 2).join('\n'), M.left + 18, metaY + 120);
+
+      // Cover footer attribution.
+      pdf.setFont('helvetica', 'normal');
+      pdf.setFontSize(8);
+      setColor(C.muted);
+      pdf.text(
+        'Document préparé avec Radar · radar-opal.vercel.app',
+        pageW / 2,
+        pageH - 36,
+        { align: 'center' },
+      );
+
+      // ---- Body pages start here ----
+      pdf.addPage();
+      paintRunningHeader();
+      y = M.top;
+
+      // ---- HTML parser → typed blocks ----
       type Run = { text: string; bold?: boolean; italic?: boolean };
       type Block =
         | { kind: 'paragraph'; runs: Run[] }
@@ -209,7 +306,11 @@ export default function RedactionPage({
         const wrapper = document.createElement('div');
         wrapper.innerHTML = html;
 
-        const collectRuns = (node: Node, ctx: { bold: boolean; italic: boolean }, into: Run[]) => {
+        const collectRuns = (
+          node: Node,
+          ctx: { bold: boolean; italic: boolean },
+          into: Run[],
+        ) => {
           if (node.nodeType === Node.TEXT_NODE) {
             const t = (node.textContent ?? '').replace(/\s+/g, ' ');
             if (t) into.push({ text: t, bold: ctx.bold, italic: ctx.italic });
@@ -230,12 +331,7 @@ export default function RedactionPage({
             if (node.nodeType !== Node.ELEMENT_NODE) {
               if (node.nodeType === Node.TEXT_NODE) {
                 const t = (node.textContent ?? '').trim();
-                if (t) {
-                  blocks.push({
-                    kind: 'paragraph',
-                    runs: [{ text: t }],
-                  });
-                }
+                if (t) blocks.push({ kind: 'paragraph', runs: [{ text: t }] });
               }
               return;
             }
@@ -245,17 +341,22 @@ export default function RedactionPage({
               let i = 1;
               el.querySelectorAll(':scope > li').forEach((li) => {
                 const runs: Run[] = [];
-                li.childNodes.forEach((c) => collectRuns(c, { bold: false, italic: false }, runs));
+                li.childNodes.forEach((c) =>
+                  collectRuns(c, { bold: false, italic: false }, runs),
+                );
                 if (runs.length) {
-                  blocks.push({ kind: 'list-item', runs, ordered: tag === 'ol', index: i });
+                  blocks.push({
+                    kind: 'list-item',
+                    runs,
+                    ordered: tag === 'ol',
+                    index: i,
+                  });
                   i++;
                 }
               });
             } else if (tag === 'br') {
-              // empty paragraph for spacing
               blocks.push({ kind: 'paragraph', runs: [{ text: '' }] });
             } else {
-              // p, div, h1-h6, span, etc — all flattened into a paragraph
               const runs: Run[] = [];
               el.childNodes.forEach((c) =>
                 collectRuns(c, { bold: false, italic: false }, runs),
@@ -269,6 +370,7 @@ export default function RedactionPage({
         return blocks;
       };
 
+      // Render runs with word-wrap and per-run bold/italic switching.
       const drawRuns = (
         runs: Run[],
         opts: { size?: number; indent?: number; bullet?: string } = {},
@@ -276,38 +378,41 @@ export default function RedactionPage({
         const size = opts.size ?? 11;
         const indent = opts.indent ?? 0;
         const xStart = M.left + indent;
-        const lh = size * 1.5;
+        const lh = size * 1.55;
 
-        // Word-wrap manually so we can swap font weights per-run within
-        // the same line. For each run, split into words; for each word,
-        // measure with the right font; if the line overflows, wrap.
+        ensureSpace(lh, paintRunningHeader);
         let xCursor = xStart;
-        ensureSpace(lh);
 
-        // Bullet first if requested
+        // Bullet (drawn once at the start of the line, in brand color).
         if (opts.bullet) {
-          pdf.setFont('helvetica', 'normal');
+          pdf.setFont('helvetica', 'bold');
           pdf.setFontSize(size);
-          pdf.setTextColor(20, 20, 20);
+          setColor(C.brand);
           pdf.text(opts.bullet, xStart - 14, y);
         }
 
         for (const run of runs) {
-          const style = run.bold && run.italic ? 'bolditalic' : run.bold ? 'bold' : run.italic ? 'italic' : 'normal';
+          const style =
+            run.bold && run.italic
+              ? 'bolditalic'
+              : run.bold
+                ? 'bold'
+                : run.italic
+                  ? 'italic'
+                  : 'normal';
           pdf.setFont('helvetica', style);
           pdf.setFontSize(size);
-          pdf.setTextColor(20, 20, 20);
+          setColor(C.text);
 
           const words = run.text.split(' ');
           for (let i = 0; i < words.length; i++) {
             const word = words[i] + (i < words.length - 1 ? ' ' : '');
             const w = pdf.getTextWidth(word);
             if (xCursor + w > M.left + contentW) {
-              // wrap
               y += lh;
-              ensureSpace(lh);
+              ensureSpace(lh, paintRunningHeader);
               xCursor = xStart;
-              if (word.startsWith(' ')) continue; // skip leading space after wrap
+              if (word.startsWith(' ')) continue;
             }
             pdf.text(word, xCursor, y);
             xCursor += w;
@@ -316,32 +421,29 @@ export default function RedactionPage({
         y += lh;
       };
 
-      // Render -----------------------------------------------------------
-
-      // Cover header
-      drawText(tenderTitle, { size: 18, style: 'bold' });
-      y += 4;
-      if (buyer) {
-        drawText(buyer, { size: 11, color: [90, 90, 90] });
-      }
-      drawText(`Mémoire technique — ${new Date().toLocaleDateString('fr-BE')}`, {
-        size: 9,
-        color: [140, 140, 140],
-      });
-
-      y += 18;
-      // Divider
-      pdf.setDrawColor(220, 220, 220);
-      pdf.line(M.left, y, M.left + contentW, y);
-      y += 22;
-
-      // Sections
+      // ---- Sections ----
       const orderedSections = SECTION_TEMPLATES.map((tpl) => sections[tpl.id]);
       for (const section of orderedSections) {
-        ensureSpace(40);
-        drawText(section.title, { size: 13, style: 'bold' });
-        y += 4;
+        ensureSpace(60, paintRunningHeader);
 
+        // Brand accent bar on the left of the heading.
+        setFill(C.brand);
+        pdf.rect(M.left, y - 12, 4, 18, 'F');
+
+        // Heading.
+        pdf.setFont('helvetica', 'bold');
+        pdf.setFontSize(15);
+        setColor(C.text);
+        pdf.text(section.title, M.left + 14, y + 2);
+        y += 18;
+
+        // Thin underline divider.
+        setDraw(C.line);
+        pdf.setLineWidth(0.5);
+        pdf.line(M.left, y, M.left + contentW, y);
+        y += 16;
+
+        // Section body
         const blocks = parseHtmlToBlocks(section.content || '<p>—</p>');
         for (const block of blocks) {
           if (block.kind === 'paragraph') {
@@ -355,27 +457,26 @@ export default function RedactionPage({
             });
           }
         }
-        y += 14;
+        y += 18;
       }
 
-      // Footer with page numbers, applied to every page
+      // ---- Footer + page numbers (skip the cover) ----
       const pageCount = pdf.getNumberOfPages();
-      for (let p = 1; p <= pageCount; p++) {
+      for (let p = 2; p <= pageCount; p++) {
         pdf.setPage(p);
+
+        // Faint divider above the footer.
+        setDraw(C.line);
+        pdf.setLineWidth(0.5);
+        pdf.line(M.left, pageH - 48, pageW - M.right, pageH - 48);
+
         pdf.setFont('helvetica', 'normal');
         pdf.setFontSize(8);
-        pdf.setTextColor(140, 140, 140);
-        pdf.text(
-          `Page ${p} / ${pageCount}`,
-          pageW / 2,
-          pageH - 28,
-          { align: 'center' },
-        );
-        pdf.text(
-          'Généré avec Radar — radar-opal.vercel.app',
-          M.left,
-          pageH - 28,
-        );
+        setColor(C.muted);
+        pdf.text('Généré avec Radar', M.left, pageH - 32);
+        pdf.text(`Page ${p - 1} / ${pageCount - 1}`, pageW - M.right, pageH - 32, {
+          align: 'right',
+        });
       }
 
       const safeTitle = tenderTitle
