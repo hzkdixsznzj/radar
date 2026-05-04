@@ -19,7 +19,7 @@ import clsx from 'clsx';
 
 import { createClient } from '@/lib/supabase/client';
 import { Button } from '@/components/ui/button';
-import { Textarea } from '@/components/ui/textarea';
+import { RichEditor } from '@/components/ui/rich-editor';
 import { Skeleton } from '@/components/ui/loading';
 import { Modal } from '@/components/ui/modal';
 import type {
@@ -495,12 +495,10 @@ export default function RedactionPage({
                       </Button>
                     </header>
 
-                    <Textarea
+                    <RichEditor
                       value={section.content}
-                      onChange={(e) => updateSection(tpl.id, e.target.value)}
+                      onChange={(html) => updateSection(tpl.id, html)}
                       placeholder={`Rédigez votre ${tpl.title.toLowerCase()}…`}
-                      autoResize
-                      className="min-h-[8rem]"
                     />
                   </article>
                 );
