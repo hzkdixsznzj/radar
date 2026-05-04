@@ -134,17 +134,18 @@ export default function RedactionPage({
   const [exportingPdf, setExportingPdf] = useState(false);
 
   // ----------------------------------------------------- PDF export
-  // Real text-based PDF (selectable, multi-page, branded) generated
-  // via jsPDF's text API — no html2canvas. Layout is hand-tuned to
-  // look like a finished memoire technique:
-  //   - Full cover page with branded blue band, large title, buyer,
-  //     company name, date.
-  //   - Running header on body pages: thin coloured band + tender
-  //     title left + page X/Y right.
-  //   - Section heading = blue accent bar on the left + bold black
-  //     heading + thin separator underneath.
-  //   - Body 11pt, list items bulleted with the brand colour.
-  //   - Footer with "Généré avec Radar" attribution.
+  // Production-grade memoire technique. Layout designed to feel like a
+  // tendering-agency template, not a generated form:
+  //   - Cover page (1) — full-bleed brand block, 28pt tender title,
+  //     subtitle, buyer block + soumissionnaire block at the bottom.
+  //   - Sommaire (2) — TOC built in a second pass with the real page
+  //     numbers of each section opener.
+  //   - Per-section opener — large light-blue "01", "02"… number and
+  //     the section title beneath, on a fresh page so each chapter has
+  //     room to breathe.
+  //   - Body — 11pt with generous line-height, bold/italic preserved,
+  //     list bullets in brand colour, drop-shadow-free.
+  //   - Footer on body pages — company name left, "Page X / Y" right.
   const handleExportPdf = useCallback(async () => {
     if (!data || !sections || exportingPdf) return;
     setExportingPdf(true);
@@ -152,24 +153,45 @@ export default function RedactionPage({
       const { default: jsPDF } = await import('jspdf');
       const pdf = new jsPDF({ unit: 'pt', format: 'a4' });
 
+      // ---- Resolve company name from the profile (fire-and-quick) ----
+      // We don't preload the profile in this page's loader since most of
+      // the editor doesn't need it; for the PDF we want it on the cover
+      // and in the footer.
+      let companyName = '';
+      try {
+        const {
+          data: { user },
+        } = await supabase.auth.getUser();
+        if (user) {
+          const { data: prof } = await supabase
+            .from('profiles')
+            .select('company_name')
+            .eq('user_id', user.id)
+            .maybeSingle();
+          companyName = (prof as { company_name?: string } | null)?.company_name ?? '';
+        }
+      } catch {
+        /* non-fatal — fall back to a generic label */
+      }
+
       // ---- Geometry & theme ----
       const pageW = pdf.internal.pageSize.getWidth();
       const pageH = pdf.internal.pageSize.getHeight();
-      const M = { top: 96, bottom: 72, left: 56, right: 56 };
+      const M = { top: 96, bottom: 72, left: 64, right: 64 };
       const contentW = pageW - M.left - M.right;
 
-      // Brand palette (matches the Radar dark UI mapped to print).
       const C = {
-        brand: [59, 130, 246] as [number, number, number],   // accent blue
-        brandSoft: [219, 234, 254] as [number, number, number], // light blue tint
-        text: [15, 23, 42] as [number, number, number],      // near-black
-        muted: [100, 116, 139] as [number, number, number],  // slate-500
-        line: [226, 232, 240] as [number, number, number],   // slate-200
+        brand: [37, 99, 235] as [number, number, number],     // blue-600
+        brandLight: [191, 219, 254] as [number, number, number],
+        brandFaint: [239, 246, 255] as [number, number, number],
+        text: [15, 23, 42] as [number, number, number],       // slate-900
+        muted: [100, 116, 139] as [number, number, number],   // slate-500
+        line: [226, 232, 240] as [number, number, number],    // slate-200
       };
 
       const tenderTitle = data.tender.title ?? 'Marché';
       const buyer = data.tender.contracting_authority ?? '';
-      const company = data.savedTender ? '' : ''; // placeholder; not on profile here
+      const reference = data.tender.external_id ?? '';
       const dateStr = new Date().toLocaleDateString('fr-BE', {
         day: 'numeric',
         month: 'long',
@@ -197,105 +219,21 @@ export default function RedactionPage({
       const paintRunningHeader = () => {
         // Thin colored band at the very top.
         setFill(C.brand);
-        pdf.rect(0, 0, pageW, 4, 'F');
-        // Header text under the band.
+        pdf.rect(0, 0, pageW, 3, 'F');
+        // Faint header text under the band — company on the left,
+        // tender title abbreviated on the right.
         pdf.setFont('helvetica', 'normal');
         pdf.setFontSize(8);
         setColor(C.muted);
+        if (companyName) {
+          pdf.text(companyName.toUpperCase(), M.left, 32);
+        }
         const ttClipped =
-          tenderTitle.length > 80 ? `${tenderTitle.slice(0, 78)}…` : tenderTitle;
-        pdf.text(ttClipped, M.left, 28);
+          tenderTitle.length > 60 ? `${tenderTitle.slice(0, 58)}…` : tenderTitle;
+        pdf.text(ttClipped, pageW - M.right, 32, { align: 'right' });
       };
 
-      // ---- Cover page (no running header on this one) ----
-      // Big top band that fills the upper third.
-      setFill(C.brand);
-      pdf.rect(0, 0, pageW, 220, 'F');
-      // Soft tint band underneath for depth.
-      setFill(C.brandSoft);
-      pdf.rect(0, 220, pageW, 8, 'F');
-
-      // "Mémoire technique" eyebrow.
-      pdf.setFont('helvetica', 'bold');
-      pdf.setFontSize(10);
-      pdf.setTextColor(255, 255, 255);
-      pdf.text('MÉMOIRE TECHNIQUE', M.left, 90);
-
-      // Tender title — wrap if long.
-      pdf.setFont('helvetica', 'bold');
-      pdf.setFontSize(24);
-      pdf.setTextColor(255, 255, 255);
-      const titleLines = pdf.splitTextToSize(
-        tenderTitle,
-        contentW,
-      ) as string[];
-      let coverY = 124;
-      for (const line of titleLines.slice(0, 3)) {
-        pdf.text(line, M.left, coverY);
-        coverY += 28;
-      }
-
-      // Buyer line right under title.
-      if (buyer) {
-        pdf.setFont('helvetica', 'normal');
-        pdf.setFontSize(11);
-        pdf.setTextColor(219, 234, 254);
-        pdf.text(buyer, M.left, coverY + 4);
-      }
-
-      // Body of cover: a left brand bar with key meta.
-      const metaY = 320;
-      setFill(C.brand);
-      pdf.rect(M.left, metaY, 4, 120, 'F');
-
-      pdf.setFont('helvetica', 'bold');
-      pdf.setFontSize(9);
-      setColor(C.muted);
-      pdf.text('SOUMISSIONNAIRE', M.left + 18, metaY + 14);
-      pdf.setFont('helvetica', 'bold');
-      pdf.setFontSize(13);
-      setColor(C.text);
-      pdf.text(company || 'Soumissionnaire', M.left + 18, metaY + 32);
-
-      pdf.setFont('helvetica', 'bold');
-      pdf.setFontSize(9);
-      setColor(C.muted);
-      pdf.text('DATE', M.left + 18, metaY + 60);
-      pdf.setFont('helvetica', 'normal');
-      pdf.setFontSize(11);
-      setColor(C.text);
-      pdf.text(dateStr, M.left + 18, metaY + 78);
-
-      pdf.setFont('helvetica', 'bold');
-      pdf.setFontSize(9);
-      setColor(C.muted);
-      pdf.text('OBJET', M.left + 18, metaY + 102);
-      pdf.setFont('helvetica', 'normal');
-      pdf.setFontSize(11);
-      setColor(C.text);
-      const objLines = pdf.splitTextToSize(
-        tenderTitle,
-        contentW - 18,
-      ) as string[];
-      pdf.text(objLines.slice(0, 2).join('\n'), M.left + 18, metaY + 120);
-
-      // Cover footer attribution.
-      pdf.setFont('helvetica', 'normal');
-      pdf.setFontSize(8);
-      setColor(C.muted);
-      pdf.text(
-        'Document préparé avec Radar · radar-opal.vercel.app',
-        pageW / 2,
-        pageH - 36,
-        { align: 'center' },
-      );
-
-      // ---- Body pages start here ----
-      pdf.addPage();
-      paintRunningHeader();
-      y = M.top;
-
-      // ---- HTML parser → typed blocks ----
+      // ---- HTML parser → typed blocks (used by section bodies) ----
       type Run = { text: string; bold?: boolean; italic?: boolean };
       type Block =
         | { kind: 'paragraph'; runs: Run[] }
@@ -378,12 +316,11 @@ export default function RedactionPage({
         const size = opts.size ?? 11;
         const indent = opts.indent ?? 0;
         const xStart = M.left + indent;
-        const lh = size * 1.55;
+        const lh = size * 1.6;
 
         ensureSpace(lh, paintRunningHeader);
         let xCursor = xStart;
 
-        // Bullet (drawn once at the start of the line, in brand color).
         if (opts.bullet) {
           pdf.setFont('helvetica', 'bold');
           pdf.setFontSize(size);
@@ -421,34 +358,184 @@ export default function RedactionPage({
         y += lh;
       };
 
-      // ---- Sections ----
-      const orderedSections = SECTION_TEMPLATES.map((tpl) => sections[tpl.id]);
-      for (const section of orderedSections) {
-        ensureSpace(60, paintRunningHeader);
+      // ============================================================
+      // PAGE 1 — Cover
+      // ============================================================
+      // Full-bleed brand block on the upper 60%.
+      setFill(C.brand);
+      pdf.rect(0, 0, pageW, pageH * 0.6, 'F');
 
-        // Brand accent bar on the left of the heading.
-        setFill(C.brand);
-        pdf.rect(M.left, y - 12, 4, 18, 'F');
+      // Decorative ghost shapes — soft tint corner accents that hint at
+      // a designed template rather than a default Word doc.
+      setFill(C.brandLight);
+      // Faint diagonal stripe top-right
+      pdf.rect(pageW - 120, 0, 120, 6, 'F');
+      pdf.rect(pageW - 60, 12, 60, 4, 'F');
 
-        // Heading.
+      // Wordmark / mini-brand top-left.
+      pdf.setFont('helvetica', 'bold');
+      pdf.setFontSize(11);
+      pdf.setTextColor(255, 255, 255);
+      pdf.text('RADAR', M.left, 56);
+      pdf.setFont('helvetica', 'normal');
+      pdf.setFontSize(8);
+      setColor(C.brandLight);
+      pdf.text('Veille marchés publics', M.left + 50, 56);
+
+      // Eyebrow — large light tracking
+      pdf.setFont('helvetica', 'bold');
+      pdf.setFontSize(11);
+      setColor(C.brandLight);
+      pdf.text('MÉMOIRE TECHNIQUE', M.left, 180);
+
+      // Tender title — large.
+      pdf.setFont('helvetica', 'bold');
+      pdf.setFontSize(28);
+      pdf.setTextColor(255, 255, 255);
+      const titleLines = pdf.splitTextToSize(tenderTitle, contentW) as string[];
+      let coverY = 220;
+      for (const line of titleLines.slice(0, 4)) {
+        pdf.text(line, M.left, coverY);
+        coverY += 34;
+      }
+
+      // Subtitle "Réponse à appel d'offres"
+      pdf.setFont('helvetica', 'normal');
+      pdf.setFontSize(12);
+      setColor(C.brandLight);
+      pdf.text("Réponse à appel d'offres", M.left, coverY + 16);
+
+      // Buyer — large but not as much as title.
+      if (buyer) {
         pdf.setFont('helvetica', 'bold');
-        pdf.setFontSize(15);
+        pdf.setFontSize(14);
+        pdf.setTextColor(255, 255, 255);
+        pdf.text(buyer, M.left, coverY + 44);
+      }
+
+      // ---- Lower 40% on white ----
+      const lowerY = pageH * 0.6;
+
+      // Soumissionnaire block (left half)
+      pdf.setFont('helvetica', 'bold');
+      pdf.setFontSize(8);
+      setColor(C.muted);
+      pdf.text('SOUMISSIONNAIRE', M.left, lowerY + 50);
+      // Brand accent dot under the label
+      setFill(C.brand);
+      pdf.circle(M.left + 4, lowerY + 60, 2, 'F');
+
+      pdf.setFont('helvetica', 'bold');
+      pdf.setFontSize(18);
+      setColor(C.text);
+      pdf.text(companyName || 'Soumissionnaire', M.left, lowerY + 84);
+
+      // Date block (right half)
+      const rightX = M.left + contentW / 2 + 20;
+      pdf.setFont('helvetica', 'bold');
+      pdf.setFontSize(8);
+      setColor(C.muted);
+      pdf.text('DATE DE REMISE', rightX, lowerY + 50);
+      setFill(C.brand);
+      pdf.circle(rightX + 4, lowerY + 60, 2, 'F');
+
+      pdf.setFont('helvetica', 'normal');
+      pdf.setFontSize(13);
+      setColor(C.text);
+      pdf.text(dateStr, rightX, lowerY + 84);
+
+      if (reference) {
+        pdf.setFont('helvetica', 'bold');
+        pdf.setFontSize(8);
+        setColor(C.muted);
+        pdf.text('RÉFÉRENCE', rightX, lowerY + 120);
+        setFill(C.brand);
+        pdf.circle(rightX + 4, lowerY + 130, 2, 'F');
+
+        pdf.setFont('helvetica', 'normal');
+        pdf.setFontSize(11);
         setColor(C.text);
-        pdf.text(section.title, M.left + 14, y + 2);
-        y += 18;
+        const refLines = pdf.splitTextToSize(reference, contentW / 2 - 20) as string[];
+        let refY = lowerY + 154;
+        for (const line of refLines.slice(0, 2)) {
+          pdf.text(line, rightX, refY);
+          refY += 14;
+        }
+      }
 
-        // Thin underline divider.
-        setDraw(C.line);
-        pdf.setLineWidth(0.5);
-        pdf.line(M.left, y, M.left + contentW, y);
-        y += 16;
+      // Cover footer
+      pdf.setFont('helvetica', 'normal');
+      pdf.setFontSize(8);
+      setColor(C.muted);
+      pdf.text(
+        'Document préparé avec Radar · radar-opal.vercel.app',
+        pageW / 2,
+        pageH - 36,
+        { align: 'center' },
+      );
 
-        // Section body
+      // ============================================================
+      // PAGE 2 — Sommaire (rendered after the body in a second pass)
+      // ============================================================
+      pdf.addPage();
+      // Stash this page index — we'll come back to it.
+      const tocPageNumber = pdf.getNumberOfPages();
+      // (intentionally blank for now)
+
+      // ============================================================
+      // Section openers + body
+      // ============================================================
+      const orderedSections = SECTION_TEMPLATES.map((tpl) => ({
+        ...sections[tpl.id],
+        templateOrder: tpl.order,
+      }));
+      type TocEntry = { number: string; title: string; page: number };
+      const tocEntries: TocEntry[] = [];
+
+      // Each section starts on its own page so each chapter feels intentional.
+      let sectionIdx = 0;
+      for (const section of orderedSections) {
+        sectionIdx++;
+        pdf.addPage();
+        paintRunningHeader();
+        const sectionStartPage = pdf.getNumberOfPages();
+        const numberStr = String(sectionIdx).padStart(2, '0');
+        tocEntries.push({
+          number: numberStr,
+          title: section.title,
+          page: sectionStartPage,
+        });
+
+        // Big light-blue section number, bottom-aligned with the title.
+        pdf.setFont('helvetica', 'bold');
+        pdf.setFontSize(72);
+        setColor(C.brandLight);
+        pdf.text(numberStr, M.left, M.top + 60);
+
+        // Section title beneath — large, dark.
+        pdf.setFont('helvetica', 'bold');
+        pdf.setFontSize(22);
+        setColor(C.text);
+        const titleW = pdf.splitTextToSize(section.title, contentW) as string[];
+        let openerY = M.top + 100;
+        for (const line of titleW) {
+          pdf.text(line, M.left, openerY);
+          openerY += 26;
+        }
+
+        // Brand divider under the heading
+        setFill(C.brand);
+        pdf.rect(M.left, openerY + 8, 40, 3, 'F');
+
+        // Body starts a comfortable gap below the divider
+        y = openerY + 44;
+
+        // Section body — render parsed HTML blocks
         const blocks = parseHtmlToBlocks(section.content || '<p>—</p>');
         for (const block of blocks) {
           if (block.kind === 'paragraph') {
             drawRuns(block.runs, { size: 11 });
-            y += 4;
+            y += 6;
           } else {
             drawRuns(block.runs, {
               size: 11,
@@ -457,10 +544,80 @@ export default function RedactionPage({
             });
           }
         }
-        y += 18;
+      }
+
+      // ============================================================
+      // Sommaire — paint into the reserved page now that we know the
+      // section start pages.
+      // ============================================================
+      pdf.setPage(tocPageNumber);
+      paintRunningHeader();
+
+      // Eyebrow + big "SOMMAIRE" header
+      pdf.setFont('helvetica', 'bold');
+      pdf.setFontSize(11);
+      setColor(C.brand);
+      pdf.text('TABLE DES MATIÈRES', M.left, M.top);
+
+      pdf.setFont('helvetica', 'bold');
+      pdf.setFontSize(28);
+      setColor(C.text);
+      pdf.text('Sommaire', M.left, M.top + 30);
+
+      // Brand accent bar
+      setFill(C.brand);
+      pdf.rect(M.left, M.top + 44, 40, 3, 'F');
+
+      // Entries
+      let tocY = M.top + 84;
+      for (const entry of tocEntries) {
+        // Section number (light blue, bold)
+        pdf.setFont('helvetica', 'bold');
+        pdf.setFontSize(11);
+        setColor(C.brand);
+        pdf.text(entry.number, M.left, tocY);
+
+        // Title — measured so we can compute leader-dot width.
+        pdf.setFont('helvetica', 'normal');
+        pdf.setFontSize(12);
+        setColor(C.text);
+        const titleX = M.left + 36;
+        pdf.text(entry.title, titleX, tocY);
+        const titleWidth = pdf.getTextWidth(entry.title);
+
+        // Leader dots
+        pdf.setFont('helvetica', 'normal');
+        pdf.setFontSize(10);
+        setColor(C.line);
+        const dotsX = titleX + titleWidth + 6;
+        const pageNumX = pageW - M.right - 18;
+        const pageNumStr = String(entry.page);
+        const pageNumW = pdf.getTextWidth(pageNumStr);
+        const dotsEndX = pageNumX - pageNumW - 6;
+        if (dotsEndX > dotsX) {
+          // Print a row of dots between dotsX and dotsEndX
+          const dotChar = '·';
+          const dotW = pdf.getTextWidth(dotChar);
+          const ndots = Math.max(3, Math.floor((dotsEndX - dotsX) / (dotW + 1)));
+          let dx = dotsX;
+          for (let i = 0; i < ndots; i++) {
+            pdf.text(dotChar, dx, tocY);
+            dx += dotW + 1;
+          }
+        }
+
+        // Page number
+        pdf.setFont('helvetica', 'bold');
+        pdf.setFontSize(11);
+        setColor(C.text);
+        pdf.text(pageNumStr, pageW - M.right, tocY, { align: 'right' });
+
+        tocY += 28;
       }
 
       // ---- Footer + page numbers (skip the cover) ----
+      // Page 1 = cover (no footer). Page 2 = TOC. Page 3+ = sections.
+      // Body pages number from 1 (page 3 in absolute terms).
       const pageCount = pdf.getNumberOfPages();
       for (let p = 2; p <= pageCount; p++) {
         pdf.setPage(p);
@@ -473,10 +630,16 @@ export default function RedactionPage({
         pdf.setFont('helvetica', 'normal');
         pdf.setFontSize(8);
         setColor(C.muted);
-        pdf.text('Généré avec Radar', M.left, pageH - 32);
-        pdf.text(`Page ${p - 1} / ${pageCount - 1}`, pageW - M.right, pageH - 32, {
-          align: 'right',
-        });
+        const footerLeft = companyName
+          ? `${companyName} · Mémoire technique`
+          : 'Mémoire technique';
+        pdf.text(footerLeft, M.left, pageH - 32);
+        pdf.text(
+          `Page ${p - 1} / ${pageCount - 1}`,
+          pageW - M.right,
+          pageH - 32,
+          { align: 'right' },
+        );
       }
 
       const safeTitle = tenderTitle
