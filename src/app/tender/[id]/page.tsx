@@ -57,8 +57,13 @@ function formatValue(value: number | null, currency: string): string {
   return `${value.toLocaleString('fr-BE')} ${currency}`;
 }
 
-function formatDate(iso: string): string {
+function formatDate(iso: string | null | undefined): string {
+  // BDA notices in particular often omit a hard deadline (open-ended call,
+  // ongoing framework agreement). Don't fall through to `new Date(null)`
+  // which silently renders "1 janvier 1970".
+  if (!iso) return 'Non spécifiée';
   const d = new Date(iso);
+  if (isNaN(d.getTime())) return 'Non spécifiée';
   return d.toLocaleDateString('fr-BE', {
     day: 'numeric',
     month: 'long',
