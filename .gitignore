@@ -42,3 +42,6 @@ next-env.d.ts
 
 # supabase CLI working dir
 supabase/.temp/
+
+# claude code internal state (lockfiles, scheduled tasks)
+.claude/

@@ -380,23 +380,41 @@ export default function TenderDetailPage({
           </Card>
         )}
 
-        {/* Link to source */}
-        {tender.documents_url && (
-          <a
-            href={tender.documents_url}
-            target="_blank"
-            rel="noopener noreferrer"
-            className="flex items-center justify-between rounded-xl border border-border bg-bg-card p-4 text-sm text-text-secondary transition-colors hover:border-accent-blue hover:text-accent-blue"
-          >
-            <span className="flex items-center gap-2">
-              <ExternalLink className="size-4" />
-              Voir l&apos;annonce officielle
-            </span>
-            <span className="text-xs text-text-muted">
-              {tender.source === 'ted' ? 'ted.europa.eu' : 'bda.belgium.be'}
-            </span>
-          </a>
-        )}
+        {/* Link to source. We have two options:
+         *  - For TED, the documents_url already points at the public notice page
+         *    on ted.europa.eu (when the SPA isn't masking it).
+         *  - For BDA, the saved URL points at the publicationWorkspace, which
+         *    is BDA's editor view and tends to require auth or render an empty
+         *    shell for outside users. A Google search on the reference number
+         *    almost always surfaces (a) the buyer's own announcement page with
+         *    the actual cahier des charges and (b) the BDA notice itself.
+         *    We prefer that to a dead-end SPA. */}
+        {(() => {
+          const isBda = tender.source !== 'ted';
+          const fallbackQuery = encodeURIComponent(
+            `${tender.external_id ?? tender.title} site:publicprocurement.be OR site:belgium.be`,
+          );
+          const href = isBda
+            ? `https://www.google.com/search?q=${fallbackQuery}`
+            : tender.documents_url;
+          if (!href) return null;
+          return (
+            <a
+              href={href}
+              target="_blank"
+              rel="noopener noreferrer"
+              className="flex items-center justify-between rounded-xl border border-border bg-bg-card p-4 text-sm text-text-secondary transition-colors hover:border-accent-blue hover:text-accent-blue"
+            >
+              <span className="flex items-center gap-2">
+                <ExternalLink className="size-4" />
+                {isBda ? "Rechercher l'annonce (Google)" : "Voir l'annonce sur TED"}
+              </span>
+              <span className="text-xs text-text-muted">
+                {isBda ? 'google.com' : 'ted.europa.eu'}
+              </span>
+            </a>
+          );
+        })()}
 
         {/* Free-tier upgrade CTA */}
         {plan === 'free' && !hasCachedAnalysis && (
