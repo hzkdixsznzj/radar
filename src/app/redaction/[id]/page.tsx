@@ -150,18 +150,66 @@ export default function RedactionPage({
           return;
         }
 
-        // Saved tender + joined tender (RLS guarantees ownership).
-        const stRes = (await supabase
+        // The route param can legitimately be either a saved_tender.id
+        // (legacy) or a tender.id (when the user clicked "Préparer ma
+        // soumission" from /analyse/[tenderId] or /tender/[tenderId]).
+        // Try saved_tender lookup first; if that misses, treat the param
+        // as a tender.id and either find or create the corresponding
+        // saved_tender for this user.
+        let stRow:
+          | (SavedTender & { tender: Tender | null })
+          | null = null;
+
+        const bySavedId = (await supabase
           .from('saved_tenders')
           .select('*, tender:tenders(*)')
           .eq('id', savedTenderId)
           .eq('user_id', user.id)
           .maybeSingle()) as unknown as {
           data: (SavedTender & { tender: Tender | null }) | null;
-          error: unknown;
         };
+        stRow = bySavedId.data;
 
-        if (!stRes.data || !stRes.data.tender) {
+        if (!stRow) {
+          // Fallback: treat the param as a tender_id. Find or create.
+          const byTenderId = (await supabase
+            .from('saved_tenders')
+            .select('*, tender:tenders(*)')
+            .eq('tender_id', savedTenderId)
+            .eq('user_id', user.id)
+            .maybeSingle()) as unknown as {
+            data: (SavedTender & { tender: Tender | null }) | null;
+          };
+          stRow = byTenderId.data;
+
+          if (!stRow) {
+            // Verify the tender exists at all before creating a row.
+            const { data: tenderCheck } = (await supabase
+              .from('tenders')
+              .select('*')
+              .eq('id', savedTenderId)
+              .maybeSingle()) as unknown as { data: Tender | null };
+
+            if (tenderCheck) {
+              const { data: created } = (await supabase
+                .from('saved_tenders')
+                .insert({
+                  user_id: user.id,
+                  tender_id: savedTenderId,
+                  status: 'new' as const,
+                  notes: null,
+                  ai_analysis: null,
+                })
+                .select('*, tender:tenders(*)')
+                .single()) as unknown as {
+                data: (SavedTender & { tender: Tender | null }) | null;
+              };
+              stRow = created;
+            }
+          }
+        }
+
+        if (!stRow || !stRow.tender) {
           if (!cancelled) {
             setLoadError('Marché introuvable.');
             setLoading(false);
@@ -169,11 +217,15 @@ export default function RedactionPage({
           return;
         }
 
+        // From here on, use the actual saved_tender id (may differ from
+        // the route param when we resolved it from a tender id).
+        const resolvedId = stRow.id;
+
         // Latest submission for this saved tender (may not exist yet).
         const subRes = (await supabase
           .from('submissions')
           .select('*')
-          .eq('saved_tender_id', savedTenderId)
+          .eq('saved_tender_id', resolvedId)
           .eq('user_id', user.id)
           .order('updated_at', { ascending: false })
           .limit(1)
@@ -184,8 +236,8 @@ export default function RedactionPage({
 
         if (cancelled) return;
 
-        const tender = stRes.data.tender;
-        const savedTender: SavedTender = { ...stRes.data, tender };
+        const tender = stRow.tender!;
+        const savedTender: SavedTender = { ...stRow, tender };
 
         setData({
           savedTender,
