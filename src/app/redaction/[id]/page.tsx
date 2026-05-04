@@ -134,112 +134,262 @@ export default function RedactionPage({
   const [exportingPdf, setExportingPdf] = useState(false);
 
   // ----------------------------------------------------- PDF export
-  // Generate a real downloadable PDF instead of opening the print dialog.
-  // Uses jsPDF + html2canvas, lazy-imported so the rest of the app
-  // doesn't pay the bundle cost. Builds a temp container off-screen, renders
-  // the title + each section's HTML, then converts to a multi-page A4 PDF.
+  // Real downloadable PDF instead of the OS print dialog. Built with
+  // jsPDF's native text API (NOT html2canvas) so the result is a true
+  // text-based PDF: selectable, copy-pasteable, small file size,
+  // proper typography. We hand-render the AI-generated HTML by walking
+  // the DOM and emitting jsPDF text commands per element.
   const handleExportPdf = useCallback(async () => {
     if (!data || !sections || exportingPdf) return;
     setExportingPdf(true);
     try {
-      const [{ default: jsPDF }, { default: html2canvas }] = await Promise.all([
-        import('jspdf'),
-        import('html2canvas'),
-      ]);
+      const { default: jsPDF } = await import('jspdf');
+      const pdf = new jsPDF({ unit: 'pt', format: 'a4' });
 
-      // Build a clean A4-friendly document off-screen. Light theme, plain
-      // typography — the dark UI styles never enter the PDF.
-      const root = document.createElement('div');
-      root.style.cssText = [
-        'position: fixed',
-        'top: -10000px',
-        'left: 0',
-        'width: 794px', // A4 @ 96dpi ≈ 794 × 1123
-        'background: white',
-        'color: #111',
-        'font-family: -apple-system, system-ui, sans-serif',
-        'font-size: 12pt',
-        'line-height: 1.5',
-        'padding: 40px 48px',
-      ].join(';');
-      const orderedSections = SECTION_TEMPLATES.map((tpl) => sections[tpl.id]);
-      root.innerHTML = `
-        <h1 style="font-size:20pt;margin:0 0 4px;font-weight:700;">
-          Mémoire technique
-        </h1>
-        <p style="margin:0 0 4px;color:#444;font-size:11pt;">
-          ${escapeHtml(data.tender.title ?? '')}
-        </p>
-        <p style="margin:0 0 24px;color:#666;font-size:10pt;">
-          ${escapeHtml(data.tender.contracting_authority ?? '')}
-        </p>
-        ${orderedSections
-          .map(
-            (s) => `
-          <section style="margin-bottom:20px;page-break-inside:avoid;">
-            <h2 style="font-size:13pt;margin:0 0 6px;font-weight:600;">
-              ${escapeHtml(s.title)}
-            </h2>
-            <div style="font-size:11pt;">${s.content || '<p style="color:#999">—</p>'}</div>
-          </section>`,
-          )
-          .join('')}
-      `;
-      document.body.appendChild(root);
+      // A4 = 595 × 842 pt. Margins keep ~3cm on top/bottom, ~2.5cm sides.
+      const pageW = pdf.internal.pageSize.getWidth();
+      const pageH = pdf.internal.pageSize.getHeight();
+      const M = { top: 64, bottom: 64, left: 56, right: 56 };
+      const contentW = pageW - M.left - M.right;
+      let y = M.top;
 
-      try {
-        const pdf = new jsPDF({ unit: 'pt', format: 'a4' });
-        const canvas = await html2canvas(root, {
-          scale: 2,
-          backgroundColor: '#ffffff',
-          useCORS: true,
-        });
-        const imgData = canvas.toDataURL('image/jpeg', 0.92);
+      // Track page count so we can paint the footer at the end.
+      const tenderTitle = data.tender.title ?? 'Marché';
+      const buyer = data.tender.contracting_authority ?? '';
 
-        // jsPDF A4 in pt = 595 × 842. We slice the long canvas into pages.
-        const pageW = pdf.internal.pageSize.getWidth();
-        const pageH = pdf.internal.pageSize.getHeight();
-        const imgW = pageW;
-        const imgH = (canvas.height * pageW) / canvas.width;
+      // Helpers ----------------------------------------------------------
+      const ensureSpace = (need: number) => {
+        if (y + need > pageH - M.bottom) {
+          pdf.addPage();
+          y = M.top;
+        }
+      };
 
-        let position = 0;
-        let remaining = imgH;
-        let pageIdx = 0;
-        while (remaining > 0) {
-          if (pageIdx > 0) pdf.addPage();
-          pdf.addImage(imgData, 'JPEG', 0, position, imgW, imgH);
-          remaining -= pageH;
-          position -= pageH;
-          pageIdx++;
+      const drawText = (
+        text: string,
+        opts: {
+          size?: number;
+          style?: 'normal' | 'bold' | 'italic';
+          color?: [number, number, number];
+          x?: number;
+          maxW?: number;
+          lineHeight?: number;
+        } = {},
+      ) => {
+        const size = opts.size ?? 11;
+        const style = opts.style ?? 'normal';
+        const color = opts.color ?? [20, 20, 20];
+        const x = opts.x ?? M.left;
+        const maxW = opts.maxW ?? contentW;
+        const lh = opts.lineHeight ?? size * 1.45;
+
+        pdf.setFont('helvetica', style);
+        pdf.setFontSize(size);
+        pdf.setTextColor(color[0], color[1], color[2]);
+
+        const lines = pdf.splitTextToSize(text, maxW) as string[];
+        for (const line of lines) {
+          ensureSpace(lh);
+          pdf.text(line, x, y);
+          y += lh;
+        }
+      };
+
+      // HTML → blocks: turn AI output into a flat list of render
+      // instructions. Supports <p>, <ul>/<ol>+<li>, <strong>, <em>.
+      // Inline <strong>/<em> are flattened with weight markers so the
+      // text drawer can switch fonts mid-paragraph.
+      type Run = { text: string; bold?: boolean; italic?: boolean };
+      type Block =
+        | { kind: 'paragraph'; runs: Run[] }
+        | { kind: 'list-item'; runs: Run[]; ordered: boolean; index: number };
+
+      const parseHtmlToBlocks = (html: string): Block[] => {
+        const blocks: Block[] = [];
+        const wrapper = document.createElement('div');
+        wrapper.innerHTML = html;
+
+        const collectRuns = (node: Node, ctx: { bold: boolean; italic: boolean }, into: Run[]) => {
+          if (node.nodeType === Node.TEXT_NODE) {
+            const t = (node.textContent ?? '').replace(/\s+/g, ' ');
+            if (t) into.push({ text: t, bold: ctx.bold, italic: ctx.italic });
+            return;
+          }
+          if (node.nodeType !== Node.ELEMENT_NODE) return;
+          const el = node as HTMLElement;
+          const tag = el.tagName.toLowerCase();
+          const next = {
+            bold: ctx.bold || tag === 'strong' || tag === 'b',
+            italic: ctx.italic || tag === 'em' || tag === 'i',
+          };
+          el.childNodes.forEach((c) => collectRuns(c, next, into));
+        };
+
+        const walk = (root: Node) => {
+          root.childNodes.forEach((node) => {
+            if (node.nodeType !== Node.ELEMENT_NODE) {
+              if (node.nodeType === Node.TEXT_NODE) {
+                const t = (node.textContent ?? '').trim();
+                if (t) {
+                  blocks.push({
+                    kind: 'paragraph',
+                    runs: [{ text: t }],
+                  });
+                }
+              }
+              return;
+            }
+            const el = node as HTMLElement;
+            const tag = el.tagName.toLowerCase();
+            if (tag === 'ul' || tag === 'ol') {
+              let i = 1;
+              el.querySelectorAll(':scope > li').forEach((li) => {
+                const runs: Run[] = [];
+                li.childNodes.forEach((c) => collectRuns(c, { bold: false, italic: false }, runs));
+                if (runs.length) {
+                  blocks.push({ kind: 'list-item', runs, ordered: tag === 'ol', index: i });
+                  i++;
+                }
+              });
+            } else if (tag === 'br') {
+              // empty paragraph for spacing
+              blocks.push({ kind: 'paragraph', runs: [{ text: '' }] });
+            } else {
+              // p, div, h1-h6, span, etc — all flattened into a paragraph
+              const runs: Run[] = [];
+              el.childNodes.forEach((c) =>
+                collectRuns(c, { bold: false, italic: false }, runs),
+              );
+              if (runs.length) blocks.push({ kind: 'paragraph', runs });
+            }
+          });
+        };
+
+        walk(wrapper);
+        return blocks;
+      };
+
+      const drawRuns = (
+        runs: Run[],
+        opts: { size?: number; indent?: number; bullet?: string } = {},
+      ) => {
+        const size = opts.size ?? 11;
+        const indent = opts.indent ?? 0;
+        const xStart = M.left + indent;
+        const lh = size * 1.5;
+
+        // Word-wrap manually so we can swap font weights per-run within
+        // the same line. For each run, split into words; for each word,
+        // measure with the right font; if the line overflows, wrap.
+        let xCursor = xStart;
+        ensureSpace(lh);
+
+        // Bullet first if requested
+        if (opts.bullet) {
+          pdf.setFont('helvetica', 'normal');
+          pdf.setFontSize(size);
+          pdf.setTextColor(20, 20, 20);
+          pdf.text(opts.bullet, xStart - 14, y);
         }
 
-        const safeTitle = (data.tender.title ?? 'memoire')
-          .replace(/[^a-zA-Z0-9-_ ]/g, '')
-          .trim()
-          .slice(0, 60);
-        pdf.save(`Mémoire — ${safeTitle || 'soumission'}.pdf`);
-      } finally {
-        document.body.removeChild(root);
+        for (const run of runs) {
+          const style = run.bold && run.italic ? 'bolditalic' : run.bold ? 'bold' : run.italic ? 'italic' : 'normal';
+          pdf.setFont('helvetica', style);
+          pdf.setFontSize(size);
+          pdf.setTextColor(20, 20, 20);
+
+          const words = run.text.split(' ');
+          for (let i = 0; i < words.length; i++) {
+            const word = words[i] + (i < words.length - 1 ? ' ' : '');
+            const w = pdf.getTextWidth(word);
+            if (xCursor + w > M.left + contentW) {
+              // wrap
+              y += lh;
+              ensureSpace(lh);
+              xCursor = xStart;
+              if (word.startsWith(' ')) continue; // skip leading space after wrap
+            }
+            pdf.text(word, xCursor, y);
+            xCursor += w;
+          }
+        }
+        y += lh;
+      };
+
+      // Render -----------------------------------------------------------
+
+      // Cover header
+      drawText(tenderTitle, { size: 18, style: 'bold' });
+      y += 4;
+      if (buyer) {
+        drawText(buyer, { size: 11, color: [90, 90, 90] });
       }
+      drawText(`Mémoire technique — ${new Date().toLocaleDateString('fr-BE')}`, {
+        size: 9,
+        color: [140, 140, 140],
+      });
+
+      y += 18;
+      // Divider
+      pdf.setDrawColor(220, 220, 220);
+      pdf.line(M.left, y, M.left + contentW, y);
+      y += 22;
+
+      // Sections
+      const orderedSections = SECTION_TEMPLATES.map((tpl) => sections[tpl.id]);
+      for (const section of orderedSections) {
+        ensureSpace(40);
+        drawText(section.title, { size: 13, style: 'bold' });
+        y += 4;
+
+        const blocks = parseHtmlToBlocks(section.content || '<p>—</p>');
+        for (const block of blocks) {
+          if (block.kind === 'paragraph') {
+            drawRuns(block.runs, { size: 11 });
+            y += 4;
+          } else {
+            drawRuns(block.runs, {
+              size: 11,
+              indent: 18,
+              bullet: block.ordered ? `${block.index}.` : '•',
+            });
+          }
+        }
+        y += 14;
+      }
+
+      // Footer with page numbers, applied to every page
+      const pageCount = pdf.getNumberOfPages();
+      for (let p = 1; p <= pageCount; p++) {
+        pdf.setPage(p);
+        pdf.setFont('helvetica', 'normal');
+        pdf.setFontSize(8);
+        pdf.setTextColor(140, 140, 140);
+        pdf.text(
+          `Page ${p} / ${pageCount}`,
+          pageW / 2,
+          pageH - 28,
+          { align: 'center' },
+        );
+        pdf.text(
+          'Généré avec Radar — radar-opal.vercel.app',
+          M.left,
+          pageH - 28,
+        );
+      }
+
+      const safeTitle = tenderTitle
+        .replace(/[^a-zA-Z0-9À-ſ-_ ]/g, '')
+        .trim()
+        .slice(0, 60);
+      pdf.save(`Mémoire — ${safeTitle || 'soumission'}.pdf`);
     } catch (err) {
       console.error('PDF export failed:', err);
-      // Fallback to native print dialog so the user has *some* path forward.
       window.print();
     } finally {
       setExportingPdf(false);
     }
   }, [data, sections, exportingPdf]);
-
-  // Tiny HTML-entity escape for the static parts of the PDF doc (titles,
-  // labels). Section bodies are already AI-generated HTML — they go in via
-  // innerHTML untouched.
-  function escapeHtml(s: string): string {
-    return s
-      .replace(/&/g, '&amp;')
-      .replace(/</g, '&lt;')
-      .replace(/>/g, '&gt;')
-      .replace(/"/g, '&quot;');
-  }
 
   // ------------------------------------------------------------------ load
   useEffect(() => {
