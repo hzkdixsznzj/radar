@@ -10,7 +10,17 @@ import type { MetadataRoute } from 'next';
 // login wall.
 // ---------------------------------------------------------------------------
 
-const BASE = process.env.NEXT_PUBLIC_APP_URL ?? 'https://radar-opal.vercel.app';
+// Resolution order:
+//   1. Explicit NEXT_PUBLIC_APP_URL — set this in Vercel env once you
+//      have a custom domain (e.g. https://radarmarche.be).
+//   2. VERCEL_URL — Vercel auto-injects the per-deployment URL on
+//      every build (e.g. radar-abc123.vercel.app). Useful for previews.
+//   3. The current production fallback for the radar-opal.vercel.app
+//      Vercel project.
+const BASE =
+  process.env.NEXT_PUBLIC_APP_URL ??
+  (process.env.VERCEL_URL ? `https://${process.env.VERCEL_URL}` : null) ??
+  'https://radar-opal.vercel.app';
 
 export default function sitemap(): MetadataRoute.Sitemap {
   const lastModified = new Date();

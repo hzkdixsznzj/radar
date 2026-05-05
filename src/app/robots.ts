@@ -1,6 +1,9 @@
 import type { MetadataRoute } from 'next';
 
-const BASE = process.env.NEXT_PUBLIC_APP_URL ?? 'https://radar-opal.vercel.app';
+const BASE =
+  process.env.NEXT_PUBLIC_APP_URL ??
+  (process.env.VERCEL_URL ? `https://${process.env.VERCEL_URL}` : null) ??
+  'https://radar-opal.vercel.app';
 
 export default function robots(): MetadataRoute.Robots {
   return {

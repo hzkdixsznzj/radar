@@ -1,6 +1,7 @@
 import type { Metadata } from 'next';
 import Link from 'next/link';
 import { ArrowLeft, Compass, Sparkles, Map } from 'lucide-react';
+import { createClient } from '@supabase/supabase-js';
 
 // ---------------------------------------------------------------------------
 // /stats — public proof-of-coverage page
@@ -30,13 +31,72 @@ interface PublicStats {
   generated_at: string;
 }
 
+// Query Supabase directly from the server component instead of self-
+// fetching /api/public/stats. The latter approach didn't work because
+// relative URLs aren't valid in server-side fetch and the absolute URL
+// requires NEXT_PUBLIC_APP_URL to be configured (it isn't on the
+// preview deploys). Direct query removes the dependency entirely; the
+// route stays available for external callers (LinkedIn, embed widgets).
 async function getStats(): Promise<PublicStats | null> {
-  const url = process.env.NEXT_PUBLIC_APP_URL ?? '';
-  const fullUrl = url ? `${url}/api/public/stats` : '/api/public/stats';
+  if (
+    !process.env.NEXT_PUBLIC_SUPABASE_URL ||
+    !process.env.SUPABASE_SERVICE_ROLE_KEY
+  ) {
+    return null;
+  }
   try {
-    const res = await fetch(fullUrl, { next: { revalidate: 300 } });
-    if (!res.ok) return null;
-    return (await res.json()) as PublicStats;
+    const supa = createClient(
+      process.env.NEXT_PUBLIC_SUPABASE_URL,
+      process.env.SUPABASE_SERVICE_ROLE_KEY,
+      { auth: { persistSession: false } },
+    );
+    const sevenDaysAgo = new Date(Date.now() - 7 * 86400_000)
+      .toISOString()
+      .slice(0, 10);
+    const thirtyDaysAgo = new Date(Date.now() - 30 * 86400_000)
+      .toISOString()
+      .slice(0, 10);
+    const [active, fresh7, fresh30, ted, bda, sample] = await Promise.all([
+      supa
+        .from('tenders')
+        .select('*', { count: 'exact', head: true })
+        .eq('status', 'open')
+        .eq('notice_kind', 'opportunity'),
+      supa
+        .from('tenders')
+        .select('*', { count: 'exact', head: true })
+        .gte('publication_date', sevenDaysAgo),
+      supa
+        .from('tenders')
+        .select('*', { count: 'exact', head: true })
+        .gte('publication_date', thirtyDaysAgo),
+      supa
+        .from('tenders')
+        .select('*', { count: 'exact', head: true })
+        .eq('source', 'ted'),
+      supa
+        .from('tenders')
+        .select('*', { count: 'exact', head: true })
+        .eq('source', 'be_bulletin'),
+      supa
+        .from('tenders')
+        .select('estimated_value')
+        .gt('estimated_value', 0)
+        .limit(10000),
+    ]);
+    const totalVolumeEur = (sample.data ?? []).reduce(
+      (sum, row) =>
+        sum + ((row as { estimated_value?: number }).estimated_value ?? 0),
+      0,
+    );
+    return {
+      total_active: active.count ?? 0,
+      fresh_7d: fresh7.count ?? 0,
+      fresh_30d: fresh30.count ?? 0,
+      sources: { ted: ted.count ?? 0, bda: bda.count ?? 0 },
+      sample_volume_eur: totalVolumeEur,
+      generated_at: new Date().toISOString(),
+    };
   } catch {
     return null;
   }
