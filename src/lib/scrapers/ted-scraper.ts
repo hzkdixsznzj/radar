@@ -172,7 +172,34 @@ function pickRegion(nutsCodes: string[]): string {
 // as an invalid timestamptz).
 type TenderInsert = Omit<Tender, 'id' | 'created_at' | 'updated_at' | 'deadline'> & {
   deadline: string | null;
+  notice_kind?: 'opportunity' | 'award' | 'prior_info' | 'modification';
 };
+
+/** Classify TED notice type into our `notice_kind` enum.
+ *  TED uses eForms notice types: 16=PIN, 17=PIN-CompleteScope, 18=Restricted,
+ *  29=Open, 25=Restricted, 33=Award (most common), 36=Modification, 38=Cancellation.
+ *  Plus the legacy strings "cn-standard"/"cn-social"/"can-standard" etc. */
+function mapTedNoticeKind(
+  notice: TEDNotice,
+): 'opportunity' | 'award' | 'prior_info' | 'modification' {
+  const t = (
+    notice['notice-type-eforms'] ??
+    notice['notice-type'] ??
+    ''
+  )
+    .toString()
+    .toLowerCase();
+  if (
+    t.includes('award') ||
+    t.includes('can-') ||
+    /(^|\D)(33|34|35)(\D|$)/.test(t)
+  )
+    return 'award';
+  if (t.includes('pin') || /(^|\D)(16|17)(\D|$)/.test(t)) return 'prior_info';
+  if (t.includes('modif') || t.includes('correct') || /36|37|38/.test(t))
+    return 'modification';
+  return 'opportunity';
+}
 
 function mapNoticeToTender(notice: TEDNotice): TenderInsert {
   const externalId = notice['publication-number'] ?? `ted-${Date.now()}`;
@@ -190,6 +217,8 @@ function mapNoticeToTender(notice: TEDNotice): TenderInsert {
   const rawDate = notice['publication-date'] ?? new Date().toISOString();
   const publicationDate = rawDate.split('+')[0];
 
+  const noticeKind = mapTedNoticeKind(notice);
+
   return {
     source: 'ted',
     external_id: externalId,
@@ -204,9 +233,12 @@ function mapNoticeToTender(notice: TEDNotice): TenderInsert {
     deadline: null,
     estimated_value: null,
     currency: 'EUR',
-    status: 'open',
+    // Award + modification = post-contract → closed.
+    // PIN = announcement of an upcoming tender → open (users want to see it).
+    status: noticeKind === 'award' || noticeKind === 'modification' ? 'closed' : 'open',
     full_text: title,
     documents_url: htmlLink,
+    notice_kind: noticeKind,
   };
 }
 

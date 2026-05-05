@@ -112,6 +112,9 @@ export async function GET(request: NextRequest) {
       .from('tenders')
       .select('*', { count: 'exact' })
       .eq('status', 'open')
+      // Live feed surfaces opportunities only. Award / modification /
+      // PIN notices live behind notice_kind filters on dedicated views.
+      .or('notice_kind.is.null,notice_kind.eq.opportunity')
       .order('publication_date', { ascending: false });
 
     if (excludeIds.length > 0) {

@@ -174,6 +174,16 @@ interface BDAPublication {
    *  scope, budget hints, technical requirements. Source of truth for
    *  budget extraction. */
   lots?: BDAPublicationLot[];
+  /** BDA notice subType: F2/E2 = call for offers (opportunity);
+   *  F3/E3/E4/E5 = award notices. The exact codes depend on the
+   *  underlying eForm version. */
+  noticeSubType?: string;
+  /** Award-specific fields — only present on award notices. */
+  awardedToOrganisationName?: string;
+  awardedAmount?: number;
+  awardDate?: string;
+  /** Reference to the original opportunity, if available. */
+  originalReferenceNumber?: string;
 }
 
 interface BDASearchResponse {
@@ -204,6 +214,21 @@ function mapNature(natures: string[] | undefined): TenderType {
   return 'services';
 }
 
+/** Classify a BDA notice into our `notice_kind` enum.
+ *  E1/E2/F2 = call for offers (opportunity)
+ *  E3/E4/E5/F3 = award / contract awarded
+ *  E6/F6 = modification / corrigendum
+ *  E7/F7 = prior info notice (PIN)  */
+function mapNoticeKind(
+  subType: string | undefined,
+): 'opportunity' | 'award' | 'prior_info' | 'modification' {
+  const s = (subType ?? '').toUpperCase();
+  if (/^[EF]?[34]$|^[EF]?5$/.test(s)) return 'award';
+  if (/^[EF]?6$/.test(s)) return 'modification';
+  if (/^[EF]?7$/.test(s)) return 'prior_info';
+  return 'opportunity';
+}
+
 /** Prefer a Belgian sub-region code (e.g. BE213) over the generic BE/BEL. */
 function pickRegion(nuts: string[]): string {
   for (const c of nuts) {
@@ -213,9 +238,17 @@ function pickRegion(nuts: string[]): string {
 }
 
 // Same trick as ted-scraper: DB `deadline` is nullable even though the shared
-// Tender type narrows to `string` for the UI. Allow null here.
-type TenderInsert = Omit<Tender, 'id' | 'created_at' | 'updated_at' | 'deadline'> & {
+// Tender type narrows to `string` for the UI. Allow null here. Award-notice
+// fields are also optional (most rows are opportunities).
+type TenderInsert = Omit<
+  Tender,
+  'id' | 'created_at' | 'updated_at' | 'deadline'
+> & {
   deadline: string | null;
+  notice_kind?: 'opportunity' | 'award' | 'prior_info' | 'modification';
+  awarded_to?: string | null;
+  awarded_value?: number | null;
+  awarded_at?: string | null;
 };
 
 function mapPublication(p: BDAPublication): TenderInsert | null {
@@ -295,6 +328,8 @@ function mapPublication(p: BDAPublication): TenderInsert | null {
   // confident — see src/lib/scrapers/extract-budget.ts.
   const extractedValue = extractBudget(fullText);
 
+  const noticeKind = mapNoticeKind(p.noticeSubType);
+
   return {
     source: 'be_bulletin',
     external_id: externalId,
@@ -309,9 +344,16 @@ function mapPublication(p: BDAPublication): TenderInsert | null {
     deadline,
     estimated_value: extractedValue,
     currency: 'EUR',
-    status,
+    // Award notices are post-contract: there's no submission deadline to
+    // chase. Mark them 'closed' so they don't pollute the live feed but
+    // remain queryable for the competitive-intel surface.
+    status: noticeKind === 'award' ? 'closed' : status,
     full_text: fullText,
     documents_url: docsUrl,
+    notice_kind: noticeKind,
+    awarded_to: p.awardedToOrganisationName ?? null,
+    awarded_value: p.awardedAmount ?? null,
+    awarded_at: p.awardDate ?? null,
   };
 }
 
@@ -332,10 +374,12 @@ async function fetchPage(token: string, page: number): Promise<BDASearchResponse
     },
     body: JSON.stringify({
       includeOrganisationChildren: true,
-      // Only fetch ACTIVE publications. Without this filter the API
-      // also returns archived / rescinded / cancelled notices that
-      // pollute the feed with stale rows.
-      publicationStatuses: ['ACTIVE'],
+      // ACTIVE = currently-open opportunities (notices users can bid on).
+      // ARCHIVED = past notices, including award notices once the contract
+      // has been awarded. We pull both to populate competitive-intel
+      // (who won, at what price); the mapper tags them via notice_kind
+      // so the UI can decide what to show where.
+      publicationStatuses: ['ACTIVE', 'ARCHIVED'],
       page, // 1-indexed
       pageSize: PAGE_SIZE,
     }),
