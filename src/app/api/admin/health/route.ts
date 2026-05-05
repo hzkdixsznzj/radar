@@ -17,9 +17,13 @@
 import { NextResponse } from 'next/server';
 import { createServerSupabaseClient } from '@/lib/supabase/server';
 
+// Emails authorised to view the admin dashboard. Extend this list as
+// new teammates need access. Comparison is case-insensitive.
 const ADMIN_EMAILS = [
+  'llucas.colella@gmail.com',
   'hizokas.lucas7@gmail.com',
-  // add more as needed
+  'radar-test-lucas@yopmail.com',
+  'radar-test-lucas@mailinator.com',
 ];
 
 interface SourceHealth {
@@ -43,7 +47,8 @@ export async function GET() {
   if (!user) {
     return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
   }
-  if (!ADMIN_EMAILS.includes(user.email ?? '')) {
+  const email = (user.email ?? '').toLowerCase();
+  if (!ADMIN_EMAILS.map((e) => e.toLowerCase()).includes(email)) {
     return NextResponse.json({ error: 'Forbidden' }, { status: 403 });
   }
 
