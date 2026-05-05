@@ -32,9 +32,36 @@ export async function POST(
       return NextResponse.json({ error: 'Submission not found' }, { status: 404 });
     }
 
-    // Find the section to regenerate
+    // Find the section to regenerate. Match by EITHER section.id or
+    // section.title — older submissions in the DB were saved with the
+    // pre-fix AI-generated ids ("methodology", "references similaires"…)
+    // while the frontend now uses the canonical template ids ("methodologie",
+    // "references"…). Same fallback as buildInitialSections() in the
+    // redaction page so the regenerate path stays compatible with both.
+    const SECTION_ALIASES: Record<string, { ids: string[]; titles: string[] }> = {
+      presentation: { ids: ['presentation', 'company'], titles: ["Présentation de l'entreprise"] },
+      comprehension: { ids: ['comprehension', 'understanding'], titles: ['Compréhension du besoin'] },
+      methodologie: {
+        ids: ['methodologie', 'methodology'],
+        titles: ['Méthodologie', 'Méthodologie proposée'],
+      },
+      planning: {
+        ids: ['planning'],
+        titles: ['Planning', "Planning d'exécution"],
+      },
+      references: {
+        ids: ['references'],
+        titles: ['Références', 'Références similaires'],
+      },
+    };
     const sections = submission.sections as unknown as SubmissionSection[];
-    const section = sections.find((s) => s.id === section_id);
+    const aliases = SECTION_ALIASES[section_id];
+    let section = sections.find((s) => s.id === section_id);
+    if (!section && aliases) {
+      section = sections.find(
+        (s) => aliases.ids.includes(s.id) || aliases.titles.includes(s.title),
+      );
+    }
 
     if (!section) {
       return NextResponse.json({ error: 'Section not found' }, { status: 404 });
@@ -62,9 +89,11 @@ export async function POST(
     // Regenerate the section
     const newContent = await regenerateSection(section, tender, profile, instruction);
 
-    // Update the section in the submission
+    // Update the section in the submission. Use the resolved `section.id`
+    // (which may be a legacy id like "methodology") so the existing row
+    // stays in place rather than getting duplicated.
     const updatedSections = sections.map((s) =>
-      s.id === section_id ? { ...s, content: newContent } : s
+      s.id === section.id ? { ...s, content: newContent } : s,
     );
 
     const { data: updatedSubmission, error: updateError } = await supabase
