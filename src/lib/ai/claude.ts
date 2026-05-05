@@ -103,9 +103,13 @@ export async function generateSubmission(
   tender: Tender,
   profile: Profile
 ): Promise<SubmissionSection[]> {
+  // Six rich-HTML sections of ~400-600 words each easily blow past
+  // 4K tokens — Claude truncates mid-content and the JSON array ends
+  // up unclosed (no trailing ']'), tripping the parser. Bumped to 16K
+  // which is enough headroom even for verbose tenders.
   const message = await getAnthropic().messages.create({
     model: SONNET_MODEL,
-    max_tokens: 4000,
+    max_tokens: 16_000,
     messages: [
       {
         role: 'user',
