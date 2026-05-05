@@ -73,6 +73,16 @@ jobs:
         # every cycle (~one bulk UPDATE).
         run: pnpm exec tsx scripts/cleanup-status.ts || true
 
+      - name: Extract themes for new tenders (Claude Haiku)
+        # Processes any tender whose `themes` column is still empty,
+        # rate-limited at 40 RPM to stay under Anthropic Tier-1 caps.
+        # Steady state: ~200-400 new tenders per cycle = 5-10 min.
+        # First-time backfill of 2.5K rows takes ~1h — run manually
+        # via `pnpm exec tsx scripts/backfill-themes.ts`.
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+        run: pnpm exec tsx scripts/backfill-themes.ts || true
+
       - name: Send daily push digest
         run: pnpm exec tsx scripts/notify.ts
 

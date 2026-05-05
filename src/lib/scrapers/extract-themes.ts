@@ -50,7 +50,9 @@ export async function extractThemes(
       messages: [{ role: 'user', content: trimmed }],
     });
   } catch (err) {
-    console.warn('[extract-themes] Claude call failed —', err);
+    process.stderr.write(
+      `[extract-themes] Claude call failed — ${(err as Error).message ?? err}\n`,
+    );
     return [];
   }
 

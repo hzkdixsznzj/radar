@@ -40,26 +40,19 @@ async function main() {
     },
     body: JSON.stringify({
       includeOrganisationChildren: true,
+      publicationStatuses: ['ARCHIVED'],
       page: 1,
-      pageSize: 50,
-      referenceNumbers: ['PPP0FF-6000/6202/2026/MH/003_002'],
+      pageSize: 5,
     }),
   });
   console.log('Search status:', sRes.status, sRes.statusText);
   const txt = await sRes.text();
   try {
     const data = JSON.parse(txt) as { publications?: Array<Record<string, unknown>> };
-    console.log('Total results for "Blandain":', data.publications?.length ?? 0);
-    for (const pub of (data.publications ?? []).slice(0, 5)) {
-      const dossier = pub.dossier as { titles?: Array<{ text?: string }> } | undefined;
-      const title = dossier?.titles?.[0]?.text;
-      console.log({
-        title: title?.slice(0, 60),
-        referenceNumber: pub.referenceNumber,
-        noticeIds: pub.noticeIds,
-        procedureId: pub.procedureId,
-        publicationWorkspaceId: pub.publicationWorkspaceId,
-      });
+    const sample = data.publications?.[0];
+    if (sample) {
+      console.log('All keys on an ARCHIVED publication:', Object.keys(sample));
+      console.log('Full sample:', JSON.stringify(sample, null, 2).slice(0, 8000));
     }
   } catch {
     console.log('Parse failed; raw body:', txt.slice(0, 800));

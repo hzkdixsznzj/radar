@@ -8,13 +8,20 @@
 // ---------------------------------------------------------------------------
 
 import { config } from 'dotenv';
-config({ path: '.env.local' });
+// override:true is necessary because something in the toolchain (dotenvx?
+// nextjs?) preloads an empty ANTHROPIC_API_KEY before this script runs,
+// and the default dotenv behaviour preserves existing values.
+config({ path: '.env.local', override: true });
 
 import { createClient } from '@supabase/supabase-js';
 import { extractThemes } from '../src/lib/scrapers/extract-themes';
 
 const BATCH_SIZE = 100;
-const CONCURRENCY = 8;
+const CONCURRENCY = 1;
+// Anthropic Tier-1 cap is 50 RPM on Haiku. Pace at ~40 RPM (1.5s/call)
+// to leave room for retries and not hit 429. For 2500 tenders that's
+// ~62 min of wall time — fine for a one-shot backfill.
+const PACE_MS = 1500;
 
 async function main() {
   const supa = createClient(
@@ -48,31 +55,29 @@ async function main() {
     }
     if (!rows || rows.length === 0) break;
 
-    // Process this batch with bounded concurrency.
-    const queue = rows.slice();
-    async function worker() {
-      while (queue.length > 0) {
-        const row = queue.shift();
-        if (!row) return;
-        const themes = await extractThemes(
-          (row as { full_text: string }).full_text ?? '',
-        );
-        if (themes.length > 0) {
-          await supa
-            .from('tenders')
-            .update({ themes })
-            .eq('id', (row as { id: string }).id);
-          withThemes++;
-        }
-        processed++;
-        if (processed % 25 === 0) {
-          console.log(
-            `  ${processed} processed (${withThemes} got themes) …`,
-          );
-        }
+    // Sequential processing with a fixed-pace sleep between calls so
+    // we don't trip the 50 RPM rate limit.
+    for (const row of rows) {
+      const t0 = Date.now();
+      const themes = await extractThemes(
+        (row as { full_text: string }).full_text ?? '',
+      );
+      if (themes.length > 0) {
+        await supa
+          .from('tenders')
+          .update({ themes })
+          .eq('id', (row as { id: string }).id);
+        withThemes++;
+      }
+      processed++;
+      if (processed % 25 === 0) {
+        console.log(`  ${processed} processed (${withThemes} got themes) …`);
+      }
+      const elapsed = Date.now() - t0;
+      if (elapsed < PACE_MS) {
+        await new Promise((r) => setTimeout(r, PACE_MS - elapsed));
       }
     }
-    await Promise.all(Array.from({ length: CONCURRENCY }, worker));
 
     offset += BATCH_SIZE;
     if (rows.length < BATCH_SIZE) break;
