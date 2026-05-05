@@ -128,17 +128,17 @@ MARCHÉ:
 - Type: ${tender.tender_type}
 - Description: ${tender.full_text || tender.description}
 
-Génère un mémoire technique avec ces sections. Réponds en JSON strict:
+Génère un mémoire technique avec EXACTEMENT ces 5 sections, EN RESPECTANT les ids et titles à la lettre (le frontend matche par id/title pour rendre chaque section dans son bloc — un suffixe ou un id différent fait disparaître la section).
+
 [
-  {"id": "company", "title": "Présentation de l'entreprise", "content": "...", "order": 1},
-  {"id": "understanding", "title": "Compréhension du besoin", "content": "...", "order": 2},
-  {"id": "methodology", "title": "Méthodologie proposée", "content": "...", "order": 3},
-  {"id": "planning", "title": "Planning d'exécution", "content": "...", "order": 4},
-  {"id": "resources", "title": "Moyens humains et matériels", "content": "...", "order": 5},
-  {"id": "references", "title": "Références similaires", "content": "...", "order": 6}
+  {"id": "presentation", "title": "Présentation de l'entreprise", "content": "...", "order": 1},
+  {"id": "comprehension", "title": "Compréhension du besoin", "content": "...", "order": 2},
+  {"id": "methodologie",  "title": "Méthodologie",              "content": "...", "order": 3},
+  {"id": "planning",      "title": "Planning",                  "content": "...", "order": 4},
+  {"id": "references",    "title": "Références",                "content": "...", "order": 5}
 ]
 
-Chaque section doit contenir du texte riche en HTML simple (p, ul, li, strong, em). Utilise les infos du profil entreprise.`,
+Chaque section doit contenir du texte riche en HTML simple (p, ul, li, strong, em). Utilise les infos du profil entreprise. Réponds UNIQUEMENT le tableau JSON, sans préambule.`,
       },
     ],
   });
