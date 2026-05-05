@@ -46,6 +46,25 @@ interface TenderDocument {
   type: string;
 }
 
+interface AwardEntry {
+  id: string;
+  title: string;
+  contracting_authority: string | null;
+  region: string | null;
+  awarded_to: string | null;
+  awarded_value: number | null;
+  awarded_at: string | null;
+  publication_date: string | null;
+}
+
+interface ParsedSpec {
+  estimated_value_eur: number | null;
+  required_certifications: string[];
+  key_dates: { label: string; date: string }[];
+  scope_summary: string;
+  buyer_obligations: string[];
+}
+
 const typeLabels: Record<string, { label: string; color: 'blue' | 'green' | 'orange' }> = {
   works: { label: 'Travaux', color: 'blue' },
   services: { label: 'Services', color: 'green' },
@@ -86,6 +105,12 @@ export default function TenderDetailPage({
   const [hasCachedAnalysis, setHasCachedAnalysis] = useState(false);
   const [documents, setDocuments] = useState<TenderDocument[] | null>(null);
   const [documentsLoading, setDocumentsLoading] = useState(false);
+  // Award notices for similar tenders — competitive intel
+  const [awards, setAwards] = useState<AwardEntry[] | null>(null);
+  // PDF spec extraction (cached on tenders.parsed_spec)
+  const [parsedSpec, setParsedSpec] = useState<ParsedSpec | null>(null);
+  const [parsingSpec, setParsingSpec] = useState(false);
+  const [parseError, setParseError] = useState<string | null>(null);
 
   useEffect(() => {
     let cancelled = false;
@@ -159,6 +184,54 @@ export default function TenderDetailPage({
       cancelled = true;
     };
   }, [tender, id]);
+
+  // Pull recently-awarded similar tenders for competitive intel.
+  // Always fires once we have the tender; surface only renders if
+  // we actually got results.
+  useEffect(() => {
+    if (!tender) return;
+    let cancelled = false;
+    fetch(`/api/awards?tender_id=${id}&limit=8`)
+      .then((r) => (r.ok ? r.json() : null))
+      .then((data) => {
+        if (cancelled || !data) return;
+        setAwards((data.awards as AwardEntry[]) ?? []);
+      })
+      .catch(() => setAwards([]));
+    return () => {
+      cancelled = true;
+    };
+  }, [tender, id]);
+
+  // Pre-load any cached parsed spec so the user doesn't have to click
+  // "Analyser" if it's already been done for this tender.
+  useEffect(() => {
+    if (!tender) return;
+    const existing = (tender as TenderWithScore & { parsed_spec?: ParsedSpec | null })
+      .parsed_spec;
+    if (existing) setParsedSpec(existing);
+  }, [tender]);
+
+  async function handleParseSpec() {
+    if (parsingSpec) return;
+    setParsingSpec(true);
+    setParseError(null);
+    try {
+      const res = await fetch(`/api/tenders/${id}/parse-spec`, {
+        method: 'POST',
+      });
+      const data = await res.json();
+      if (!res.ok) {
+        setParseError(data?.error ?? 'Erreur inconnue');
+        return;
+      }
+      setParsedSpec(data.spec as ParsedSpec);
+    } catch (err) {
+      setParseError(String(err));
+    } finally {
+      setParsingSpec(false);
+    }
+  }
 
   async function handleSave() {
     if (saved || saving) return;
@@ -331,6 +404,178 @@ export default function TenderDetailPage({
             </h3>
             <p className="text-sm leading-relaxed text-text-secondary whitespace-pre-wrap">
               {tender.full_text}
+            </p>
+          </Card>
+        )}
+
+        {/* AI spec extraction card — shows the extracted budget /
+            certifications / key dates / scope summary from the cahier
+            des charges PDF, when one is reachable. The first call
+            triggers a Claude PDF parse (~$0.10-0.50, cached forever
+            on the tender row). */}
+        {(parsedSpec || (documents && documents.some((d) => d.type === 'pdf'))) && (
+          <Card padding="lg">
+            <div className="mb-3 flex items-start justify-between gap-3">
+              <h3 className="flex items-center gap-2 text-sm font-semibold uppercase tracking-wider text-text-muted">
+                <Sparkles className="size-4 text-accent-blue" />
+                Synthèse IA du cahier des charges
+              </h3>
+              {!parsedSpec && (
+                <Button
+                  size="sm"
+                  variant="secondary"
+                  loading={parsingSpec}
+                  onClick={handleParseSpec}
+                  icon={<Sparkles className="size-4 text-accent-blue" />}
+                >
+                  Analyser le PDF
+                </Button>
+              )}
+            </div>
+
+            {parseError && (
+              <p className="mb-3 rounded-lg bg-accent-red-soft p-3 text-sm text-accent-red">
+                {parseError}
+              </p>
+            )}
+
+            {!parsedSpec && !parsingSpec && !parseError && (
+              <p className="text-sm text-text-secondary">
+                Lance une analyse IA pour extraire le budget exact, les
+                certifications exigées, les dates clés et un résumé de la
+                mission directement depuis le cahier des charges.
+              </p>
+            )}
+
+            {parsedSpec && (
+              <div className="space-y-4">
+                {parsedSpec.estimated_value_eur != null && (
+                  <div>
+                    <p className="text-xs font-semibold uppercase tracking-wider text-text-muted">
+                      Budget estimé
+                    </p>
+                    <p className="font-display text-xl font-bold text-text-primary">
+                      {parsedSpec.estimated_value_eur.toLocaleString('fr-BE')} EUR
+                    </p>
+                  </div>
+                )}
+
+                {parsedSpec.scope_summary && (
+                  <div>
+                    <p className="text-xs font-semibold uppercase tracking-wider text-text-muted">
+                      Mission
+                    </p>
+                    <p className="text-sm leading-relaxed text-text-secondary">
+                      {parsedSpec.scope_summary}
+                    </p>
+                  </div>
+                )}
+
+                {parsedSpec.required_certifications.length > 0 && (
+                  <div>
+                    <p className="text-xs font-semibold uppercase tracking-wider text-text-muted">
+                      Certifications exigées
+                    </p>
+                    <div className="mt-1.5 flex flex-wrap gap-1.5">
+                      {parsedSpec.required_certifications.map((c) => (
+                        <span
+                          key={c}
+                          className="rounded-full border border-border bg-bg-input px-2.5 py-0.5 text-xs text-text-secondary"
+                        >
+                          {c}
+                        </span>
+                      ))}
+                    </div>
+                  </div>
+                )}
+
+                {parsedSpec.key_dates.length > 0 && (
+                  <div>
+                    <p className="text-xs font-semibold uppercase tracking-wider text-text-muted">
+                      Dates clés
+                    </p>
+                    <ul className="mt-1.5 space-y-1">
+                      {parsedSpec.key_dates.map((d, i) => (
+                        <li key={i} className="flex items-center gap-2 text-sm text-text-secondary">
+                          <Calendar className="size-3.5 text-text-muted" />
+                          <span className="font-medium">{d.date}</span>
+                          <span className="text-text-muted">— {d.label}</span>
+                        </li>
+                      ))}
+                    </ul>
+                  </div>
+                )}
+
+                {parsedSpec.buyer_obligations.length > 0 && (
+                  <div>
+                    <p className="text-xs font-semibold uppercase tracking-wider text-text-muted">
+                      Obligations du soumissionnaire
+                    </p>
+                    <ul className="mt-1.5 list-disc space-y-1 pl-5 text-sm text-text-secondary">
+                      {parsedSpec.buyer_obligations.map((o, i) => (
+                        <li key={i}>{o}</li>
+                      ))}
+                    </ul>
+                  </div>
+                )}
+              </div>
+            )}
+          </Card>
+        )}
+
+        {/* Competitive intelligence — recently-awarded similar tenders.
+            Surfaced only when we have at least one match. Massively
+            valuable: the user sees who beat them on similar contracts
+            and at what price. */}
+        {awards && awards.length > 0 && (
+          <Card padding="lg">
+            <h3 className="mb-3 flex items-center gap-2 text-sm font-semibold uppercase tracking-wider text-text-muted">
+              <Tag className="size-4 text-accent-blue" />
+              Marchés similaires attribués récemment
+            </h3>
+            <ul className="space-y-3">
+              {awards.map((a) => (
+                <li
+                  key={a.id}
+                  className="rounded-lg border border-border bg-bg-input p-3 text-sm"
+                >
+                  <p className="font-medium text-text-primary line-clamp-2">
+                    {a.title}
+                  </p>
+                  <div className="mt-1.5 flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-text-muted">
+                    {a.contracting_authority && (
+                      <span className="flex items-center gap-1">
+                        <Building2 className="size-3" />
+                        {a.contracting_authority}
+                      </span>
+                    )}
+                    {a.region && (
+                      <span className="flex items-center gap-1">
+                        <MapPin className="size-3" />
+                        {a.region}
+                      </span>
+                    )}
+                  </div>
+                  <div className="mt-2 flex flex-wrap items-center gap-x-3 gap-y-1 text-xs">
+                    {a.awarded_to && (
+                      <span className="rounded-full bg-accent-green-soft px-2 py-0.5 font-medium text-accent-green">
+                        Gagné par : {a.awarded_to}
+                      </span>
+                    )}
+                    {a.awarded_value != null && (
+                      <span className="font-medium text-text-primary">
+                        {a.awarded_value.toLocaleString('fr-BE')} EUR
+                      </span>
+                    )}
+                    {a.awarded_at && (
+                      <span className="text-text-muted">{a.awarded_at}</span>
+                    )}
+                  </div>
+                </li>
+              ))}
+            </ul>
+            <p className="mt-3 text-xs italic text-text-muted">
+              Source : avis d&apos;attribution publiés par les pouvoirs adjudicateurs.
             </p>
           </Card>
         )}
