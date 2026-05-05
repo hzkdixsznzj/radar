@@ -11,7 +11,7 @@
 
 import { NextRequest, NextResponse } from 'next/server';
 import { createServerSupabaseClient } from '@/lib/supabase/server';
-import { scoreTender } from '@/lib/scrapers/scoring';
+import { scoreTender, scoreTenderBreakdown } from '@/lib/scrapers/scoring';
 import { friendlyRegionsToNuts } from '@/lib/geo/be-regions';
 import type { Tender, Profile } from '@/types/database';
 
@@ -51,6 +51,9 @@ export async function GET(
     ? { ...profile, regions: friendlyRegionsToNuts(profile.regions ?? []) }
     : null;
 
+  const score_breakdown = scoringProfile
+    ? scoreTenderBreakdown(tender as unknown as Tender, scoringProfile)
+    : null;
   const relevance_score = scoringProfile
     ? scoreTender(tender as unknown as Tender, scoringProfile)
     : 50;
@@ -58,5 +61,6 @@ export async function GET(
   return NextResponse.json({
     ...(tender as unknown as Tender),
     relevance_score,
+    score_breakdown,
   });
 }

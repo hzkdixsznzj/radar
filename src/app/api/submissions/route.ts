@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import { createServerSupabaseClient } from '@/lib/supabase/server';
 import { generateSubmission } from '@/lib/ai/claude';
 import { checkRateLimit, rateLimitResponse } from '@/lib/rate-limit';
+import { reportError } from '@/lib/sentry-lite';
 import { PLANS } from '@/lib/stripe/config';
 import type { SubscriptionPlan } from '@/types/database';
 
@@ -142,6 +143,7 @@ export async function POST(request: NextRequest) {
     return NextResponse.json({ submission }, { status: 201 });
   } catch (err) {
     console.error('Error generating submission:', err);
+    reportError(err, { route: 'api/submissions' });
     return NextResponse.json({ error: 'Internal server error' }, { status: 500 });
   }
 }

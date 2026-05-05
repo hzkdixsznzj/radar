@@ -36,6 +36,7 @@ import {
 import { Button } from '@/components/ui/button';
 import { Card } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
+import { ScoreBreakdown } from '@/components/score-breakdown';
 import { Countdown } from '@/components/ui/countdown';
 import { ScoreBadge } from '@/components/ui/score-badge';
 import type { TenderWithScore } from '@/types/database';
@@ -327,8 +328,33 @@ export default function TenderDetailPage({
       <main className="mx-auto max-w-2xl px-4 pb-40 pt-6 space-y-5">
         {/* Hero: score + type + title */}
         <Card padding="lg">
-          <div className="flex items-start justify-between gap-4 mb-4">
-            <ScoreBadge score={tender.relevance_score} size="lg" />
+          <div className="flex items-start justify-between gap-4 mb-2">
+            <div className="flex flex-col gap-2">
+              <ScoreBadge score={tender.relevance_score} size="lg" />
+              {(tender as TenderWithScore & {
+                score_breakdown?: {
+                  total: number;
+                  sector: number;
+                  cpv: number;
+                  region: number;
+                  keyword: number;
+                  budget: number;
+                };
+              }).score_breakdown && (
+                <ScoreBreakdown
+                  {...(tender as TenderWithScore & {
+                    score_breakdown: {
+                      total: number;
+                      sector: number;
+                      cpv: number;
+                      region: number;
+                      keyword: number;
+                      budget: number;
+                    };
+                  }).score_breakdown}
+                />
+              )}
+            </div>
             <Badge color={typeConfig.color} size="md">
               {typeConfig.label}
             </Badge>

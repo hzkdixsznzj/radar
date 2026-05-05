@@ -9,6 +9,7 @@ import {
   Sparkles,
   Radar as RadarIcon,
   UserCog,
+  Download,
 } from 'lucide-react';
 import { createServerSupabaseClient } from '@/lib/supabase/server';
 import { BottomNav } from '@/components/layout/bottom-nav';
@@ -242,7 +243,7 @@ export default async function DashboardPage() {
         </section>
 
         {/* Quick actions */}
-        <section aria-label="Actions rapides" className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+        <section aria-label="Actions rapides" className="grid grid-cols-1 gap-3 sm:grid-cols-3">
           <QuickActionLink
             href="/feed"
             icon={<Compass className="size-5" />}
@@ -256,6 +257,13 @@ export default async function DashboardPage() {
             title="Mon profil"
             description="Affinez vos critères pour mieux cibler"
             accent="green"
+          />
+          <QuickActionLink
+            href="/api/saved-tenders/export"
+            icon={<Download className="size-5" />}
+            title="Exporter en CSV"
+            description="Téléchargez vos marchés sauvés"
+            accent="orange"
           />
         </section>
 
