@@ -39,15 +39,18 @@ async function main() {
 
   let processed = 0;
   let withThemes = 0;
-  let offset = 0;
 
+  // Always query from offset=0: as we tag rows they fall out of the
+  // "themes is empty" filter, so the next batch is always the freshest
+  // 100 untagged rows. This avoids the offset-drift bug where we'd
+  // skip past rows that hadn't been processed yet.
   while (true) {
     const { data: rows, error } = await supa
       .from('tenders')
       .select('id, full_text')
       .or('themes.is.null,themes.eq.{}')
       .order('publication_date', { ascending: false })
-      .range(offset, offset + BATCH_SIZE - 1);
+      .range(0, BATCH_SIZE - 1);
 
     if (error) {
       console.error(error.message);
@@ -79,7 +82,6 @@ async function main() {
       }
     }
 
-    offset += BATCH_SIZE;
     if (rows.length < BATCH_SIZE) break;
   }
 
