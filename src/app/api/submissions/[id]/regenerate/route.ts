@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { createServerSupabaseClient } from '@/lib/supabase/server';
 import { regenerateSection } from '@/lib/ai/claude';
+import { checkRateLimit, rateLimitResponse } from '@/lib/rate-limit';
 import type { SubmissionSection } from '@/types/database';
 
 export async function POST(
@@ -10,6 +11,9 @@ export async function POST(
   const supabase = await createServerSupabaseClient();
   const { data: { user } } = await supabase.auth.getUser();
   if (!user) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
+
+  const limit = checkRateLimit(user.id, 'submission');
+  if (!limit.ok) return rateLimitResponse(limit);
 
   const { id } = await params;
 

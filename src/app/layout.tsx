@@ -1,6 +1,7 @@
 import type { Metadata, Viewport } from 'next';
 import { Outfit, DM_Sans } from 'next/font/google';
 import { PWAProvider } from '@/components/pwa/pwa-provider';
+import { CookieConsent } from '@/components/cookie-consent';
 import './globals.css';
 
 const outfit = Outfit({
@@ -65,6 +66,7 @@ export default function RootLayout({
     <html lang="fr" className={`${outfit.variable} ${dmSans.variable}`}>
       <body className="min-h-dvh flex flex-col antialiased">
         <PWAProvider>{children}</PWAProvider>
+        <CookieConsent />
       </body>
     </html>
   );

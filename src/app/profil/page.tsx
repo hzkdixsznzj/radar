@@ -24,6 +24,7 @@ import {
   ArrowLeft,
   Radar,
   CheckCircle2,
+  Download,
 } from 'lucide-react';
 import clsx from 'clsx';
 import { createClient } from '@/lib/supabase/client';
@@ -439,7 +440,13 @@ export default function ProfilPage() {
     if (deleteConfirmText !== 'SUPPRIMER') return;
     setDeleting(true);
     try {
-      await fetch('/api/account', { method: 'DELETE' });
+      const res = await fetch('/api/account/delete', { method: 'POST' });
+      if (!res.ok) {
+        const json = await res.json().catch(() => ({}));
+        console.error('Delete failed:', json);
+        setDeleting(false);
+        return;
+      }
       await supabase.auth.signOut();
       window.location.href = '/login';
     } catch (err) {
@@ -447,6 +454,11 @@ export default function ProfilPage() {
       setDeleting(false);
     }
   }, [deleteConfirmText, supabase]);
+
+  const handleExportData = useCallback(() => {
+    // Browser handles the download via Content-Disposition.
+    window.location.href = '/api/account/export';
+  }, []);
 
   const handleManageSubscription = useCallback(async () => {
     try {
@@ -1020,6 +1032,21 @@ export default function ProfilPage() {
                 <LogOut className="size-4 text-text-muted" />
                 <span className="text-sm font-medium text-text-primary">
                   Se déconnecter
+                </span>
+              </div>
+              <ChevronRight className="size-4 text-text-muted" />
+            </button>
+
+            {/* GDPR data export */}
+            <button
+              type="button"
+              onClick={handleExportData}
+              className="flex w-full items-center justify-between p-4 border-b border-border text-left hover:bg-bg-card-hover transition-colors cursor-pointer"
+            >
+              <div className="flex items-center gap-3">
+                <Download className="size-4 text-text-muted" />
+                <span className="text-sm font-medium text-text-primary">
+                  Exporter mes données (RGPD)
                 </span>
               </div>
               <ChevronRight className="size-4 text-text-muted" />

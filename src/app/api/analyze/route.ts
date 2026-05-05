@@ -16,6 +16,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { createServerSupabaseClient } from '@/lib/supabase/server';
 import { analyzeTender } from '@/lib/ai/claude';
+import { checkRateLimit, rateLimitResponse } from '@/lib/rate-limit';
 import type { AIAnalysis } from '@/types/database';
 
 export async function POST(request: NextRequest) {
@@ -25,6 +26,9 @@ export async function POST(request: NextRequest) {
   } = await supabase.auth.getUser();
   if (!user)
     return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
+
+  const limit = checkRateLimit(user.id, 'analyze');
+  if (!limit.ok) return rateLimitResponse(limit);
 
   try {
     const { tender_id } = await request.json();

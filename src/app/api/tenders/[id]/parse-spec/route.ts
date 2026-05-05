@@ -17,6 +17,7 @@ import { createServerSupabaseClient } from '@/lib/supabase/server';
 import { parsePdfSpec } from '@/lib/scrapers/parse-pdf';
 import type { TenderDocument } from '@/lib/scrapers/documents-scraper';
 import { resolveTenderDocuments } from '@/lib/scrapers/documents-scraper';
+import { checkRateLimit, rateLimitResponse } from '@/lib/rate-limit';
 
 export const dynamic = 'force-dynamic';
 export const maxDuration = 60; // PDF extraction can be slow
@@ -34,6 +35,9 @@ export async function POST(
   if (!user) {
     return NextResponse.json({ error: 'Non autorisé' }, { status: 401 });
   }
+
+  const limit = checkRateLimit(user.id, 'parseSpec');
+  if (!limit.ok) return rateLimitResponse(limit);
 
   // Load the tender + its already-cached parsed_spec, if any.
   const { data: tender, error: readErr } = await supabase
