@@ -180,13 +180,18 @@ export default function RedactionPage({
       const M = { top: 96, bottom: 72, left: 64, right: 64 };
       const contentW = pageW - M.left - M.right;
 
+      // Refined palette: deep navy as primary (consulting / institutional),
+      // brand blue as accent, warm grey + cream for breathing room.
       const C = {
-        brand: [37, 99, 235] as [number, number, number],     // blue-600
+        navy: [15, 30, 60] as [number, number, number],       // primary dark
+        navyDeep: [10, 22, 45] as [number, number, number],   // overlay
+        brand: [37, 99, 235] as [number, number, number],     // accent blue
         brandLight: [191, 219, 254] as [number, number, number],
         brandFaint: [239, 246, 255] as [number, number, number],
-        text: [15, 23, 42] as [number, number, number],       // slate-900
-        muted: [100, 116, 139] as [number, number, number],   // slate-500
-        line: [226, 232, 240] as [number, number, number],    // slate-200
+        text: [17, 24, 39] as [number, number, number],       // gray-900
+        muted: [107, 114, 128] as [number, number, number],   // gray-500
+        line: [229, 231, 235] as [number, number, number],    // gray-200
+        cream: [250, 248, 244] as [number, number, number],   // warm bg accent
       };
 
       const tenderTitle = data.tender.title ?? 'Marché';
@@ -217,20 +222,28 @@ export default function RedactionPage({
       };
 
       const paintRunningHeader = () => {
-        // Thin colored band at the very top.
+        // Subtle navy dot left + brand-blue dot right — discreet,
+        // doesn't dominate. No flat coloured band: keeps the page
+        // breathable.
+        setFill(C.navy);
+        pdf.circle(M.left, 36, 2, 'F');
         setFill(C.brand);
-        pdf.rect(0, 0, pageW, 3, 'F');
-        // Faint header text under the band — company on the left,
-        // tender title abbreviated on the right.
+        pdf.circle(M.left + 8, 36, 2, 'F');
+
         pdf.setFont('helvetica', 'normal');
         pdf.setFontSize(8);
         setColor(C.muted);
         if (companyName) {
-          pdf.text(companyName.toUpperCase(), M.left, 32);
+          pdf.text(companyName.toUpperCase(), M.left + 22, 39);
         }
         const ttClipped =
           tenderTitle.length > 60 ? `${tenderTitle.slice(0, 58)}…` : tenderTitle;
-        pdf.text(ttClipped, pageW - M.right, 32, { align: 'right' });
+        pdf.text(ttClipped, pageW - M.right, 39, { align: 'right' });
+
+        // Hairline under the header
+        setDraw(C.line);
+        pdf.setLineWidth(0.5);
+        pdf.line(M.left, 50, pageW - M.right, 50);
       };
 
       // ---- HTML parser → typed blocks (used by section bodies) ----
@@ -359,107 +372,141 @@ export default function RedactionPage({
       };
 
       // ============================================================
-      // PAGE 1 — Cover
+      // PAGE 1 — Cover (curves + serif headline + breathing room)
       // ============================================================
-      // Full-bleed brand block on the upper 60%.
+
+      // Cream background base so the page doesn't feel sterile white.
+      setFill(C.cream);
+      pdf.rect(0, 0, pageW, pageH, 'F');
+
+      // Big curved navy shape filling roughly the upper-right.
+      // Built as a giant ellipse anchored off-page so only the curve
+      // shows — gives the "belle courbe" feel without a hard rectangle.
+      setFill(C.navy);
+      pdf.ellipse(pageW + 80, -120, 540, 480, 'F');
+
+      // Subtle accent ellipse in brand blue, partially under the navy
+      // one — gives depth without looking busy.
       setFill(C.brand);
-      pdf.rect(0, 0, pageW, pageH * 0.6, 'F');
+      pdf.ellipse(pageW + 220, 80, 360, 260, 'F');
 
-      // Decorative ghost shapes — soft tint corner accents that hint at
-      // a designed template rather than a default Word doc.
-      setFill(C.brandLight);
-      // Faint diagonal stripe top-right
-      pdf.rect(pageW - 120, 0, 120, 6, 'F');
-      pdf.rect(pageW - 60, 12, 60, 4, 'F');
-
-      // Wordmark / mini-brand top-left.
+      // Tiny brand mark, top-left on the cream side.
+      setFill(C.navy);
+      pdf.circle(M.left + 6, 56, 6, 'F');
+      setColor(C.text);
       pdf.setFont('helvetica', 'bold');
       pdf.setFontSize(11);
-      pdf.setTextColor(255, 255, 255);
-      pdf.text('RADAR', M.left, 56);
+      pdf.text('Radar', M.left + 22, 60);
       pdf.setFont('helvetica', 'normal');
       pdf.setFontSize(8);
-      setColor(C.brandLight);
-      pdf.text('Veille marchés publics', M.left + 50, 56);
+      setColor(C.muted);
+      pdf.text('Veille marchés publics', M.left + 22, 71);
 
-      // Eyebrow — large light tracking
+      // Eyebrow — sober, on the cream side.
       pdf.setFont('helvetica', 'bold');
-      pdf.setFontSize(11);
-      setColor(C.brandLight);
-      pdf.text('MÉMOIRE TECHNIQUE', M.left, 180);
+      pdf.setFontSize(10);
+      setColor(C.brand);
+      pdf.text('MÉMOIRE TECHNIQUE', M.left, 230);
 
-      // Tender title — large.
-      pdf.setFont('helvetica', 'bold');
-      pdf.setFontSize(28);
-      pdf.setTextColor(255, 255, 255);
-      const titleLines = pdf.splitTextToSize(tenderTitle, contentW) as string[];
-      let coverY = 220;
-      for (const line of titleLines.slice(0, 4)) {
+      // Hairline divider under the eyebrow
+      setDraw(C.brand);
+      pdf.setLineWidth(1.5);
+      pdf.line(M.left, 240, M.left + 32, 240);
+
+      // Tender title — TIMES serif, large. Sits on the cream area to
+      // contrast against the curved navy block on the right.
+      pdf.setFont('times', 'bold');
+      pdf.setFontSize(34);
+      setColor(C.navy);
+      const titleW2 = contentW - 80; // narrower so it doesn't overlap the curve
+      const titleLines = pdf.splitTextToSize(tenderTitle, titleW2) as string[];
+      let coverY = 280;
+      for (const line of titleLines.slice(0, 5)) {
         pdf.text(line, M.left, coverY);
-        coverY += 34;
+        coverY += 40;
       }
 
-      // Subtitle "Réponse à appel d'offres"
-      pdf.setFont('helvetica', 'normal');
-      pdf.setFontSize(12);
-      setColor(C.brandLight);
-      pdf.text("Réponse à appel d'offres", M.left, coverY + 16);
+      // Subtitle in italic serif — refined, consulting feel.
+      pdf.setFont('times', 'italic');
+      pdf.setFontSize(13);
+      setColor(C.muted);
+      pdf.text("Réponse à l'appel d'offres", M.left, coverY + 10);
 
-      // Buyer — large but not as much as title.
+      // Buyer — bold sans on cream, smaller than the title but readable.
       if (buyer) {
         pdf.setFont('helvetica', 'bold');
-        pdf.setFontSize(14);
-        pdf.setTextColor(255, 255, 255);
-        pdf.text(buyer, M.left, coverY + 44);
+        pdf.setFontSize(13);
+        setColor(C.text);
+        pdf.text(buyer, M.left, coverY + 36);
       }
 
-      // ---- Lower 40% on white ----
-      const lowerY = pageH * 0.6;
+      // ---- Bottom info card with rounded corners ----
+      const cardX = M.left;
+      const cardY = pageH - 220;
+      const cardW = contentW;
+      const cardH = 140;
+      // Soft shadow approximation: a slightly darker cream rect offset
+      // 3pt down/right.
+      pdf.setFillColor(225, 220, 210);
+      pdf.roundedRect(cardX + 3, cardY + 3, cardW, cardH, 12, 12, 'F');
+      // The card itself in white.
+      pdf.setFillColor(255, 255, 255);
+      pdf.roundedRect(cardX, cardY, cardW, cardH, 12, 12, 'F');
+      // Brand accent strip on the left of the card.
+      setFill(C.brand);
+      pdf.roundedRect(cardX, cardY, 6, cardH, 3, 3, 'F');
 
-      // Soumissionnaire block (left half)
+      // Card columns — two columns (companyName | date+ref)
+      const colW = (cardW - 32 - 6) / 2;
+      const innerX = cardX + 28;
+      const col2X = innerX + colW + 16;
+
       pdf.setFont('helvetica', 'bold');
       pdf.setFontSize(8);
       setColor(C.muted);
-      pdf.text('SOUMISSIONNAIRE', M.left, lowerY + 50);
-      // Brand accent dot under the label
-      setFill(C.brand);
-      pdf.circle(M.left + 4, lowerY + 60, 2, 'F');
+      pdf.text('SOUMISSIONNAIRE', innerX, cardY + 32);
 
-      pdf.setFont('helvetica', 'bold');
-      pdf.setFontSize(18);
-      setColor(C.text);
-      pdf.text(companyName || 'Soumissionnaire', M.left, lowerY + 84);
+      pdf.setFont('times', 'bold');
+      pdf.setFontSize(20);
+      setColor(C.navy);
+      pdf.text(
+        companyName || 'Soumissionnaire',
+        innerX,
+        cardY + 60,
+      );
 
-      // Date block (right half)
-      const rightX = M.left + contentW / 2 + 20;
+      pdf.setFont('helvetica', 'normal');
+      pdf.setFontSize(10);
+      setColor(C.muted);
+      pdf.text(
+        'Document de candidature',
+        innerX,
+        cardY + 78,
+      );
+
+      // Right column — date + reference
       pdf.setFont('helvetica', 'bold');
       pdf.setFontSize(8);
       setColor(C.muted);
-      pdf.text('DATE DE REMISE', rightX, lowerY + 50);
-      setFill(C.brand);
-      pdf.circle(rightX + 4, lowerY + 60, 2, 'F');
-
+      pdf.text('DATE DE REMISE', col2X, cardY + 32);
       pdf.setFont('helvetica', 'normal');
       pdf.setFontSize(13);
       setColor(C.text);
-      pdf.text(dateStr, rightX, lowerY + 84);
+      pdf.text(dateStr, col2X, cardY + 50);
 
       if (reference) {
         pdf.setFont('helvetica', 'bold');
         pdf.setFontSize(8);
         setColor(C.muted);
-        pdf.text('RÉFÉRENCE', rightX, lowerY + 120);
-        setFill(C.brand);
-        pdf.circle(rightX + 4, lowerY + 130, 2, 'F');
-
+        pdf.text('RÉFÉRENCE DU MARCHÉ', col2X, cardY + 78);
         pdf.setFont('helvetica', 'normal');
-        pdf.setFontSize(11);
+        pdf.setFontSize(10);
         setColor(C.text);
-        const refLines = pdf.splitTextToSize(reference, contentW / 2 - 20) as string[];
-        let refY = lowerY + 154;
+        const refLines = pdf.splitTextToSize(reference, colW - 8) as string[];
+        let refY = cardY + 96;
         for (const line of refLines.slice(0, 2)) {
-          pdf.text(line, rightX, refY);
-          refY += 14;
+          pdf.text(line, col2X, refY);
+          refY += 13;
         }
       }
 
@@ -470,7 +517,7 @@ export default function RedactionPage({
       pdf.text(
         'Document préparé avec Radar · radar-opal.vercel.app',
         pageW / 2,
-        pageH - 36,
+        pageH - 32,
         { align: 'center' },
       );
 
@@ -483,7 +530,7 @@ export default function RedactionPage({
       // (intentionally blank for now)
 
       // ============================================================
-      // Section openers + body
+      // Section openers + body — circular badges, serif headings
       // ============================================================
       const orderedSections = SECTION_TEMPLATES.map((tpl) => ({
         ...sections[tpl.id],
@@ -492,7 +539,6 @@ export default function RedactionPage({
       type TocEntry = { number: string; title: string; page: number };
       const tocEntries: TocEntry[] = [];
 
-      // Each section starts on its own page so each chapter feels intentional.
       let sectionIdx = 0;
       for (const section of orderedSections) {
         sectionIdx++;
@@ -506,29 +552,77 @@ export default function RedactionPage({
           page: sectionStartPage,
         });
 
-        // Big light-blue section number, bottom-aligned with the title.
+        // Big filled navy circle as the section badge — gives the
+        // "belle courbe" feel and reads like a chapter marker.
+        const badgeR = 28;
+        const badgeCx = M.left + badgeR;
+        const badgeCy = M.top + 30;
+        setFill(C.navy);
+        pdf.circle(badgeCx, badgeCy, badgeR, 'F');
+        // Inner brand-blue accent ring for depth
+        setDraw(C.brand);
+        pdf.setLineWidth(1.5);
+        pdf.circle(badgeCx, badgeCy, badgeR - 4, 'S');
+        // The number, white, centred in the badge.
         pdf.setFont('helvetica', 'bold');
-        pdf.setFontSize(72);
-        setColor(C.brandLight);
-        pdf.text(numberStr, M.left, M.top + 60);
+        pdf.setFontSize(20);
+        pdf.setTextColor(255, 255, 255);
+        pdf.text(numberStr, badgeCx, badgeCy + 7, { align: 'center' });
 
-        // Section title beneath — large, dark.
+        // Eyebrow next to the badge
         pdf.setFont('helvetica', 'bold');
-        pdf.setFontSize(22);
-        setColor(C.text);
+        pdf.setFontSize(9);
+        setColor(C.brand);
+        pdf.text(
+          `SECTION ${sectionIdx} / ${orderedSections.length}`,
+          badgeCx + badgeR + 16,
+          badgeCy - 4,
+        );
+
+        // Title in serif underneath, on its own line
+        pdf.setFont('times', 'bold');
+        pdf.setFontSize(26);
+        setColor(C.navy);
         const titleW = pdf.splitTextToSize(section.title, contentW) as string[];
-        let openerY = M.top + 100;
+        let openerY = badgeCy + 56;
         for (const line of titleW) {
           pdf.text(line, M.left, openerY);
-          openerY += 26;
+          openerY += 32;
         }
 
-        // Brand divider under the heading
-        setFill(C.brand);
-        pdf.rect(M.left, openerY + 8, 40, 3, 'F');
+        // Tagline (the section template description) in italic serif
+        pdf.setFont('times', 'italic');
+        pdf.setFontSize(12);
+        setColor(C.muted);
+        pdf.text(
+          SECTION_TEMPLATES.find((t) => t.id === section.id)?.title ===
+            section.title
+            ? ''
+            : section.title,
+          M.left,
+          openerY + 4,
+        );
+
+        // Curved divider — a thin arc instead of a flat line.
+        // Approximated with two short bezier segments.
+        setDraw(C.brand);
+        pdf.setLineWidth(2);
+        const arcY = openerY + 16;
+        // jsPDF.lines uses [dx, dy] tuples relative to a starting point.
+        // A subtle wave: 2 control points, length ~80pt.
+        pdf.lines(
+          [
+            [40, -4, 80, 4, 120, 0],
+            [40, 4, 80, -4, 120, 0],
+          ] as unknown as number[][],
+          M.left,
+          arcY,
+          [1, 1],
+          'S',
+        );
 
         // Body starts a comfortable gap below the divider
-        y = openerY + 44;
+        y = openerY + 56;
 
         // Section body — render parsed HTML blocks
         const blocks = parseHtmlToBlocks(section.content || '<p>—</p>');
@@ -547,72 +641,87 @@ export default function RedactionPage({
       }
 
       // ============================================================
-      // Sommaire — paint into the reserved page now that we know the
-      // section start pages.
+      // Sommaire — circular badges, serif heading, refined leader dots
       // ============================================================
       pdf.setPage(tocPageNumber);
       paintRunningHeader();
 
-      // Eyebrow + big "SOMMAIRE" header
+      // Eyebrow
       pdf.setFont('helvetica', 'bold');
-      pdf.setFontSize(11);
+      pdf.setFontSize(10);
       setColor(C.brand);
       pdf.text('TABLE DES MATIÈRES', M.left, M.top);
 
-      pdf.setFont('helvetica', 'bold');
-      pdf.setFontSize(28);
-      setColor(C.text);
-      pdf.text('Sommaire', M.left, M.top + 30);
+      // Hairline accent under the eyebrow
+      setDraw(C.brand);
+      pdf.setLineWidth(1.5);
+      pdf.line(M.left, M.top + 8, M.left + 32, M.top + 8);
 
-      // Brand accent bar
-      setFill(C.brand);
-      pdf.rect(M.left, M.top + 44, 40, 3, 'F');
+      // Big serif "Sommaire"
+      pdf.setFont('times', 'bold');
+      pdf.setFontSize(36);
+      setColor(C.navy);
+      pdf.text('Sommaire', M.left, M.top + 50);
 
-      // Entries
-      let tocY = M.top + 84;
+      // Decorative curved arc under the heading — a fat shallow bezier.
+      setDraw(C.brand);
+      pdf.setLineWidth(2);
+      pdf.lines(
+        [[60, -3, 120, 3, 180, 0]] as unknown as number[][],
+        M.left,
+        M.top + 70,
+        [1, 1],
+        'S',
+      );
+
+      // Entries — number in a small navy circle, then title, dots, page#
+      let tocY = M.top + 120;
       for (const entry of tocEntries) {
-        // Section number (light blue, bold)
+        // Circular section badge
+        const cx = M.left + 11;
+        const cy = tocY - 4;
+        setFill(C.navy);
+        pdf.circle(cx, cy, 11, 'F');
         pdf.setFont('helvetica', 'bold');
-        pdf.setFontSize(11);
-        setColor(C.brand);
-        pdf.text(entry.number, M.left, tocY);
+        pdf.setFontSize(9);
+        pdf.setTextColor(255, 255, 255);
+        pdf.text(entry.number, cx, cy + 3, { align: 'center' });
 
-        // Title — measured so we can compute leader-dot width.
-        pdf.setFont('helvetica', 'normal');
-        pdf.setFontSize(12);
+        // Title in serif for elegance
+        pdf.setFont('times', 'normal');
+        pdf.setFontSize(13);
         setColor(C.text);
-        const titleX = M.left + 36;
+        const titleX = M.left + 32;
         pdf.text(entry.title, titleX, tocY);
         const titleWidth = pdf.getTextWidth(entry.title);
 
-        // Leader dots
+        // Leader dots — narrow and faint for a refined look
         pdf.setFont('helvetica', 'normal');
-        pdf.setFontSize(10);
+        pdf.setFontSize(9);
         setColor(C.line);
-        const dotsX = titleX + titleWidth + 6;
-        const pageNumX = pageW - M.right - 18;
+        const dotsX = titleX + titleWidth + 8;
+        const pageNumX = pageW - M.right;
         const pageNumStr = String(entry.page);
         const pageNumW = pdf.getTextWidth(pageNumStr);
-        const dotsEndX = pageNumX - pageNumW - 6;
+        const dotsEndX = pageNumX - pageNumW - 8;
         if (dotsEndX > dotsX) {
-          // Print a row of dots between dotsX and dotsEndX
           const dotChar = '·';
           const dotW = pdf.getTextWidth(dotChar);
-          const ndots = Math.max(3, Math.floor((dotsEndX - dotsX) / (dotW + 1)));
+          const ndots = Math.max(3, Math.floor((dotsEndX - dotsX) / (dotW + 2)));
           let dx = dotsX;
           for (let i = 0; i < ndots; i++) {
             pdf.text(dotChar, dx, tocY);
-            dx += dotW + 1;
+            dx += dotW + 2;
           }
         }
 
-        // Page number
-        pdf.setFont('helvetica', 'bold');
-        pdf.setFontSize(11);
-        setColor(C.text);
+        // Page number in serif bold
+        pdf.setFont('times', 'bold');
+        pdf.setFontSize(13);
+        setColor(C.navy);
         pdf.text(pageNumStr, pageW - M.right, tocY, { align: 'right' });
 
-        tocY += 28;
+        tocY += 32;
       }
 
       // ---- Footer + page numbers (skip the cover) ----
