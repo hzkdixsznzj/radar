@@ -17,10 +17,16 @@ import type { MetadataRoute } from 'next';
 //      every build (e.g. radar-abc123.vercel.app). Useful for previews.
 //   3. The current production fallback for the radar-opal.vercel.app
 //      Vercel project.
-const BASE =
+// Strip trailing whitespace + slash so we never emit
+// "https://radar-opal.vercel.app /sitemap.xml" (a stray newline in
+// the Vercel env value once produced exactly that).
+const BASE = (
   process.env.NEXT_PUBLIC_APP_URL ??
   (process.env.VERCEL_URL ? `https://${process.env.VERCEL_URL}` : null) ??
-  'https://radar-opal.vercel.app';
+  'https://radar-opal.vercel.app'
+)
+  .trim()
+  .replace(/\/$/, '');
 
 export default function sitemap(): MetadataRoute.Sitemap {
   const lastModified = new Date();
