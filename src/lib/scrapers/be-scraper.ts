@@ -23,6 +23,7 @@ import { createClient } from '@supabase/supabase-js';
 import { randomUUID } from 'node:crypto';
 import { existsSync, readFileSync } from 'node:fs';
 import type { Tender, TenderType } from '@/types/database';
+import { extractBudget } from './extract-budget';
 
 // Load .env.local when running locally. CI provides env directly.
 if (existsSync('.env.local')) {
@@ -142,6 +143,11 @@ interface CpvItem {
   descriptions?: LocalisedText[];
 }
 
+interface BDAPublicationLot {
+  titles?: LocalisedText[];
+  descriptions?: LocalisedText[];
+}
+
 interface BDAPublication {
   referenceNumber?: string;
   dossier?: {
@@ -164,6 +170,10 @@ interface BDAPublication {
   vaultSubmissionDeadline?: string | null; // ISO timestamp (no TZ)
   publicationType?: string; // 'ACTIVE' | ...
   publicationWorkspaceId?: string;
+  /** Per-lot rich descriptions — usually contain the actual project
+   *  scope, budget hints, technical requirements. Source of truth for
+   *  budget extraction. */
+  lots?: BDAPublicationLot[];
 }
 
 interface BDASearchResponse {
@@ -252,22 +262,38 @@ function mapPublication(p: BDAPublication): TenderInsert | null {
     ? `https://www.publicprocurement.be/bda/publications/${p.publicationWorkspaceId}`
     : null;
 
-  // Build a rich full_text to feed the sector/keyword scoring. Titles on the
-  // BDA are often terse ("Accord-cadre - Dépannage") — pulling in the CPV
-  // descriptions, the procedure type, and the buyer name makes the full_text
-  // searchable enough that an HVAC profile actually matches a tender whose
-  // title only says "Entretien installations techniques" but whose CPV is
-  // 50720000 "Services de réparation et d'entretien d'installations de chauffage".
+  // Build a rich full_text to feed the sector/keyword scoring AND the
+  // budget extractor. Titles on the BDA are often terse ("Accord-cadre -
+  // Dépannage"); the dossier description is sometimes a one-liner. The
+  // meat — full project scope, budget mentions, technical specs — lives
+  // in the per-lot descriptions, so we explicitly include those.
   const procedure = p.dossier?.procurementProcedureType ?? '';
+  const lotTitles: string[] = [];
+  const lotDescriptions: string[] = [];
+  for (const lot of p.lots ?? []) {
+    const lt = pickLang(lot.titles);
+    if (lt) lotTitles.push(lt);
+    const ld = pickLang(lot.descriptions);
+    if (ld) lotDescriptions.push(ld);
+  }
   const fullText = [
     title,
     description,
+    lotTitles.length ? `Lots: ${lotTitles.join(' · ')}` : null,
+    lotDescriptions.length ? lotDescriptions.join('\n\n') : null,
     cpvDescriptions.length ? `CPV: ${cpvDescriptions.join(' · ')}` : null,
     procedure ? `Procédure: ${procedure}` : null,
     buyer && buyer !== 'Unknown' ? `Adjudicateur: ${buyer}` : null,
   ]
     .filter(Boolean)
     .join('\n\n');
+
+  // Best-effort budget extraction from the body text. BDA's structured
+  // payload doesn't expose `estimated_value`; the figure usually shows
+  // up in the description in human-readable form ("estimé à 250 000 EUR
+  // HTVA"). The extractor only commits a value when it's reasonably
+  // confident — see src/lib/scrapers/extract-budget.ts.
+  const extractedValue = extractBudget(fullText);
 
   return {
     source: 'be_bulletin',
@@ -281,7 +307,7 @@ function mapPublication(p: BDAPublication): TenderInsert | null {
     region: pickRegion(nutsCodes),
     publication_date: publicationDate,
     deadline,
-    estimated_value: null,
+    estimated_value: extractedValue,
     currency: 'EUR',
     status,
     full_text: fullText,
@@ -306,6 +332,10 @@ async function fetchPage(token: string, page: number): Promise<BDASearchResponse
     },
     body: JSON.stringify({
       includeOrganisationChildren: true,
+      // Only fetch ACTIVE publications. Without this filter the API
+      // also returns archived / rescinded / cancelled notices that
+      // pollute the feed with stale rows.
+      publicationStatuses: ['ACTIVE'],
       page, // 1-indexed
       pageSize: PAGE_SIZE,
     }),

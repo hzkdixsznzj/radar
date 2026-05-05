@@ -17,8 +17,13 @@ name: Daily Radar Pipeline
 
 on:
   schedule:
-    # 5h UTC = 6h CET / 7h CEST — lands just before users wake up.
-    - cron: '0 5 * * *'
+    # Run 4× per day so users see fresh tenders within hours of publication
+    # instead of next-day. Times in UTC (BE = UTC+1 in winter, UTC+2 in summer).
+    #   05:00 UTC → 6/7h local — pre-morning digest
+    #   10:00 UTC → 11/12h     — catches late-morning publications
+    #   14:00 UTC → 15/16h     — afternoon refresh
+    #   19:00 UTC → 20/21h     — end-of-day catchup
+    - cron: '0 5,10,14,19 * * *'
   workflow_dispatch: {}
 
 concurrency:
@@ -62,6 +67,12 @@ jobs:
         # fails we still want the pipeline to continue, so `|| true` below.
         run: pnpm exec tsx src/lib/scrapers/be-scraper.ts || true
 
+      - name: Close tenders past their deadline
+        # Marks tenders with a deadline in the past as `status='closed'`
+        # so the feed surface only shows live opportunities. Cheap to run
+        # every cycle (~one bulk UPDATE).
+        run: pnpm exec tsx scripts/cleanup-status.ts || true
+
       - name: Send daily push digest
         run: pnpm exec tsx scripts/notify.ts
 
@@ -76,12 +87,16 @@ jobs:
     needs: pipeline
     if: failure()
     runs-on: ubuntu-latest
+    env:
+      WEBHOOK: ${{ secrets.PIPELINE_ALERT_WEBHOOK }}
+      RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
     steps:
       - name: Post failure alert
-        if: ${{ secrets.PIPELINE_ALERT_WEBHOOK != '' }}
-        env:
-          WEBHOOK: ${{ secrets.PIPELINE_ALERT_WEBHOOK }}
-          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        # Note: secrets cannot be referenced in step-level `if:` directly
+        # (GitHub Actions rejects the workflow as malformed before any job
+        # can start, which is what was happening on every push). Use the
+        # env var as a string compare instead.
+        if: env.WEBHOOK != ''
         run: |
           curl -X POST -H 'Content-Type: application/json' \
             -d "{\"content\":\"🚨 Radar daily pipeline failed. Run: $RUN_URL\"}" \

@@ -18,7 +18,10 @@ import type { Tender, TenderType } from '@/types/database';
 // ---------------------------------------------------------------------------
 
 const TED_ENDPOINT = 'https://api.ted.europa.eu/v3/notices/search';
-const PAGE_SIZE = 100;
+// TED v3 search API caps a single response at 250 — verified empirically.
+// Combined with 1-day chunks of BE place-of-performance, 250 is plenty
+// (busiest day in 2026 was ~110 notices).
+const PAGE_SIZE = 250;
 const MAX_RETRIES = 3;
 const RETRY_DELAY_MS = 2000;
 const DEFAULT_DAYS_BACK = 7;
@@ -267,38 +270,90 @@ async function upsertTenders(tenders: TenderInsert[]): Promise<number> {
 /**
  * Scrape Belgian tenders from TED for the last {daysBack} days and upsert
  * them into the `tenders` table. Returns the number of rows upserted.
+ *
+ * TED's v3 search API caps a single request at PAGE_SIZE notices but
+ * advertises the full count via `totalNoticeCount`. To capture everything,
+ * we split the date window into 2-day chunks: a typical chunk in BE
+ * stays well under 100 notices, so each chunk is a single-page fetch.
+ * Saves us the trouble of dealing with iterationNextToken pagination
+ * which is finicky and undocumented across TED API versions.
  */
 export async function scrapeTED(daysBack: number = DEFAULT_DAYS_BACK): Promise<number> {
   console.log(
-    `[TED] Starting scrape of Belgian tenders from the last ${daysBack} days...`,
+    `[TED] Starting scrape of Belgian tenders from the last ${daysBack} days (chunked)...`,
   );
 
-  const sinceCompact = daysAgoCompact(daysBack);
-  const response = await fetchPage(sinceCompact, PAGE_SIZE);
-  const notices = response.notices ?? [];
-
-  console.log(
-    `[TED] Received ${notices.length} notices (total available: ${response.totalNoticeCount ?? '?'})`,
-  );
-
-  if (notices.length === 0) {
-    console.log('[TED] No notices to upsert.');
-    return 0;
+  // 1-day chunks: TED publishes ~50-90 BE notices/day so each chunk
+  // fits well under the 100/page cap. Cheaper than parsing
+  // iterationNextToken pagination which the API barely documents.
+  const chunks: { from: string; to: string }[] = [];
+  const today = new Date();
+  for (let offset = 0; offset <= daysBack; offset++) {
+    const day = new Date(today.getTime() - offset * 86400_000);
+    const ymd = ymdCompact(day);
+    chunks.push({ from: ymd, to: ymd });
   }
 
-  // Deduplicate by external_id within this batch (TED can occasionally
-  // repeat across pages) before sending to Supabase.
-  const mapped = notices.map(mapNoticeToTender);
+  const allNotices: TEDNotice[] = [];
+  let totalAdvertised = 0;
+  for (const chunk of chunks) {
+    const response = await fetchPageRange(chunk.from, chunk.to, PAGE_SIZE);
+    const notices = response.notices ?? [];
+    totalAdvertised += response.totalNoticeCount ?? 0;
+    console.log(
+      `[TED] ${chunk.from}..${chunk.to}: received ${notices.length} (advertised ${response.totalNoticeCount ?? '?'})`,
+    );
+    if (notices.length >= PAGE_SIZE && (response.totalNoticeCount ?? 0) > PAGE_SIZE) {
+      console.warn(
+        `[TED] Chunk hit page limit — narrow daysBack or use 1-day chunks for full coverage.`,
+      );
+    }
+    allNotices.push(...notices);
+  }
+
+  console.log(
+    `[TED] Total collected: ${allNotices.length} (sum of advertised across chunks: ${totalAdvertised})`,
+  );
+  if (allNotices.length === 0) return 0;
+
+  const mapped = allNotices.map(mapNoticeToTender);
   const seen = new Set<string>();
   const unique = mapped.filter((t) => {
     if (seen.has(t.external_id)) return false;
     seen.add(t.external_id);
     return true;
   });
+  console.log(`[TED] After de-dup by external_id: ${unique.length} unique notices.`);
 
   const count = await upsertTenders(unique);
   console.log(`[TED] Scrape complete. Upserted ${count} tenders.`);
   return count;
+}
+
+function ymdCompact(d: Date): string {
+  const y = d.getUTCFullYear();
+  const m = String(d.getUTCMonth() + 1).padStart(2, '0');
+  const dd = String(d.getUTCDate()).padStart(2, '0');
+  return `${y}${m}${dd}`;
+}
+
+async function fetchPageRange(
+  fromCompact: string,
+  toCompact: string,
+  limit: number,
+): Promise<TEDSearchResponse> {
+  const body = {
+    query: `place-of-performance=BEL AND publication-date>=${fromCompact} AND publication-date<=${toCompact}`,
+    limit,
+    fields: [...TED_FIELDS],
+  };
+  console.log(`[TED] POST ${TED_ENDPOINT} — ${body.query} (limit=${limit})`);
+  const res = await fetchWithRetry(TED_ENDPOINT, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', Accept: 'application/json' },
+    body: JSON.stringify(body),
+  });
+  return (await res.json()) as TEDSearchResponse;
 }
 
 // ---------------------------------------------------------------------------
