@@ -69,6 +69,7 @@ export function PricingToggle() {
   const [annual, setAnnual] = useState(false);
   const [loadingPlan, setLoadingPlan] = useState<string | null>(null);
   const [isAuthed, setIsAuthed] = useState<boolean | null>(null);
+  const [errorMsg, setErrorMsg] = useState<string | null>(null);
   const router = useRouter();
 
   // Detect auth state once on mount so the CTA can branch sensibly:
@@ -103,6 +104,7 @@ export function PricingToggle() {
     }
 
     setLoadingPlan(plan.id);
+    setErrorMsg(null);
     try {
       const res = await fetch('/api/stripe/checkout', {
         method: 'POST',
@@ -110,15 +112,26 @@ export function PricingToggle() {
         body: JSON.stringify({ plan: plan.id, billing: annual ? 'annual' : 'monthly' }),
       });
       const json = await res.json();
-      if (json?.url) {
+      if (res.ok && json?.url) {
         window.location.href = json.url;
-      } else {
-        // Fallback: at least take them to /signup?plan=… so they don't
-        // think the button is dead.
-        router.push(plan.href);
+        return;
       }
+      // Stripe not yet configured (live keys missing) — show explicit
+      // "contact us" message instead of silently bouncing to /feed via
+      // the auth middleware.
+      if (json?.error === 'stripe-not-configured') {
+        setErrorMsg(
+          json.message ??
+            "Le paiement n'est pas encore activé. Contactez-nous pour démarrer.",
+        );
+        return;
+      }
+      // Other error — generic.
+      setErrorMsg(
+        json?.message ?? json?.error ?? 'Une erreur est survenue. Réessayez.',
+      );
     } catch {
-      router.push(plan.href);
+      setErrorMsg('Réseau indisponible. Vérifiez votre connexion.');
     } finally {
       setLoadingPlan(null);
     }
@@ -195,6 +208,12 @@ export function PricingToggle() {
             );
           })}
         </div>
+
+        {errorMsg && (
+          <div className="mx-auto mt-6 max-w-md rounded-xl border border-accent-orange/40 bg-accent-orange-soft p-4 text-center text-sm text-accent-orange">
+            {errorMsg}
+          </div>
+        )}
 
         <p className="mt-8 text-center text-sm text-text-muted">
           Tous les prix sont hors TVA. Annulation possible &agrave; tout moment.

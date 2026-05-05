@@ -20,10 +20,27 @@ export async function POST(request: NextRequest) {
     const selectedPlan = PLANS[plan as 'pro' | 'business'];
     const priceId = selectedPlan.priceId;
 
-    if (!priceId) {
+    if (!priceId || priceId.startsWith('price_placeholder')) {
       return NextResponse.json(
-        { error: 'Price ID not configured for this plan.' },
-        { status: 500 }
+        {
+          error: 'stripe-not-configured',
+          message:
+            "Le paiement n'est pas encore activé. Contactez-nous pour démarrer.",
+        },
+        { status: 503 },
+      );
+    }
+    if (
+      !process.env.STRIPE_SECRET_KEY ||
+      process.env.STRIPE_SECRET_KEY === 'sk_test_placeholder'
+    ) {
+      return NextResponse.json(
+        {
+          error: 'stripe-not-configured',
+          message:
+            "Le paiement n'est pas encore activé. Contactez-nous pour démarrer.",
+        },
+        { status: 503 },
       );
     }
 
