@@ -1,6 +1,13 @@
 import Anthropic from '@anthropic-ai/sdk';
 import type { Profile, Tender, AIAnalysis, SubmissionSection } from '@/types/database';
 
+// Production model. Was 'claude-sonnet-4-6' which silently returned empty
+// or off-format content (the SDK accepts the name but the Anthropic API
+// either resolves to an older snapshot or doesn't bind the messages
+// API correctly). 'claude-sonnet-4-5' is the verified-working alias used
+// elsewhere in the codebase (see scrapers/parse-pdf.ts).
+const SONNET_MODEL = 'claude-sonnet-4-5';
+
 let _anthropic: Anthropic | null = null;
 
 function getAnthropic(): Anthropic {
@@ -10,12 +17,43 @@ function getAnthropic(): Anthropic {
   return _anthropic;
 }
 
+/**
+ * Robust JSON extractor. Claude sometimes wraps responses in
+ * ```json ... ``` fences or adds a one-line preamble. We strip those
+ * before pattern-matching the actual JSON, and on failure log the raw
+ * text so we can diagnose prompt drift.
+ */
+function extractJson<T>(text: string, kind: 'object' | 'array'): T {
+  const stripped = text
+    .replace(/^```(?:json)?\s*/i, '')
+    .replace(/```\s*$/, '')
+    .trim();
+  const pattern = kind === 'array' ? /\[[\s\S]*\]/ : /\{[\s\S]*\}/;
+  const match = stripped.match(pattern);
+  if (!match) {
+    console.error(
+      `[claude] Failed to parse ${kind}. Raw text (first 500 chars):`,
+      text.slice(0, 500),
+    );
+    throw new Error(`Failed to parse ${kind === 'array' ? 'submission' : 'AI analysis'}`);
+  }
+  try {
+    return JSON.parse(match[0]) as T;
+  } catch (err) {
+    console.error(
+      `[claude] JSON.parse failed. Match (first 500 chars):`,
+      match[0].slice(0, 500),
+    );
+    throw err;
+  }
+}
+
 export async function analyzeTender(
   tender: Tender,
   profile: Profile
 ): Promise<AIAnalysis> {
   const message = await getAnthropic().messages.create({
-    model: 'claude-sonnet-4-6',
+    model: SONNET_MODEL,
     max_tokens: 2000,
     messages: [
       {
@@ -58,9 +96,7 @@ Réponds en JSON strict avec cette structure exacte:
   });
 
   const text = message.content[0].type === 'text' ? message.content[0].text : '';
-  const jsonMatch = text.match(/\{[\s\S]*\}/);
-  if (!jsonMatch) throw new Error('Failed to parse AI analysis');
-  return JSON.parse(jsonMatch[0]) as AIAnalysis;
+  return extractJson<AIAnalysis>(text, 'object');
 }
 
 export async function generateSubmission(
@@ -68,7 +104,7 @@ export async function generateSubmission(
   profile: Profile
 ): Promise<SubmissionSection[]> {
   const message = await getAnthropic().messages.create({
-    model: 'claude-sonnet-4-6',
+    model: SONNET_MODEL,
     max_tokens: 4000,
     messages: [
       {
@@ -104,9 +140,7 @@ Chaque section doit contenir du texte riche en HTML simple (p, ul, li, strong, e
   });
 
   const text = message.content[0].type === 'text' ? message.content[0].text : '';
-  const jsonMatch = text.match(/\[[\s\S]*\]/);
-  if (!jsonMatch) throw new Error('Failed to parse submission');
-  return JSON.parse(jsonMatch[0]) as SubmissionSection[];
+  return extractJson<SubmissionSection[]>(text, 'array');
 }
 
 export async function chatWithAssistant(
@@ -130,7 +164,7 @@ ${context.tender ? `MARCHÉ EN COURS:
 Réponds en français, de manière concise et pratique. Tu connais le droit belge des marchés publics (loi du 17 juin 2016).`;
 
   const message = await getAnthropic().messages.create({
-    model: 'claude-sonnet-4-6',
+    model: SONNET_MODEL,
     max_tokens: 1500,
     system: systemPrompt,
     messages,
@@ -146,7 +180,7 @@ export async function regenerateSection(
   instruction?: string
 ): Promise<string> {
   const message = await getAnthropic().messages.create({
-    model: 'claude-sonnet-4-6',
+    model: SONNET_MODEL,
     max_tokens: 1500,
     messages: [
       {
